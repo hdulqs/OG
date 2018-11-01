@@ -2,23 +2,20 @@
 package wserver
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"github.com/annchain/OG/types"
-	"github.com/gin-gonic/gin"
+	"net/http"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
-	"net/http"
+	"fmt"
+	"github.com/gin-gonic/gin"
 	"time"
+	"context"
+	"github.com/annchain/OG/types"
+	"encoding/json"
 )
 
 const (
 	serverDefaultWSPath   = "/ws"
 	serverDefaultPushPath = "/push"
-
-	messageTypeNewUnit   = "new_unit"
-	messageTypeConfirmed = "confirmed"
 )
 
 var defaultUpgrader = &websocket.Upgrader{
@@ -56,9 +53,6 @@ type Server struct {
 	// To receive new tx events
 	NewTxReceivedChan chan types.Txi
 
-	// to receive confirmation events
-	BatchConfirmedChan chan map[types.Hash]types.Txi
-
 	wh     *websocketHandler
 	ph     *pushHandler
 	engine *gin.Engine
@@ -66,8 +60,8 @@ type Server struct {
 	quit   chan bool
 }
 
-func (s *Server) GetBenchmarks() map[string]interface{} {
-	return map[string]interface{}{
+func (s *Server) GetBenchmarks() map[string]int {
+	return map[string]int{
 		"newtx": len(s.NewTxReceivedChan),
 	}
 }
@@ -89,12 +83,11 @@ func (s *Server) Push(event, message string) (int, error) {
 // NewServer creates a new Server.
 func NewServer(addr string) *Server {
 	s := &Server{
-		Addr:               addr,
-		WSPath:             serverDefaultWSPath,
-		PushPath:           serverDefaultPushPath,
-		NewTxReceivedChan:  make(chan types.Txi),
-		BatchConfirmedChan: make(chan map[types.Hash]types.Txi),
-		quit:               make(chan bool),
+		Addr:              addr,
+		WSPath:            serverDefaultWSPath,
+		PushPath:          serverDefaultPushPath,
+		NewTxReceivedChan: make(chan types.Txi),
+		quit:              make(chan bool),
 	}
 
 	e2c := NewEvent2Cons()
@@ -149,65 +142,32 @@ func (s *Server) Name() string {
 }
 func (s *Server) WatchNewTxs() {
 	ticker := time.NewTicker(time.Millisecond * 300)
-	defer ticker.Stop()
 	var uidata *UIData
 	for {
 		select {
 		case tx := <-s.NewTxReceivedChan:
 			if uidata == nil {
 				uidata = &UIData{
-					Type: messageTypeNewUnit,
 					//Nodes: []Node{},
 					//Edges: []Edge{},
 				}
 			}
-			uidata.AddToBatch(tx, true)
-		case batch := <-s.BatchConfirmedChan:
-			// first publish all pending txs
-			s.publishTxs(uidata)
-			uidata = nil
-			// then publish batch
-			s.publishBatch(batch)
+			uidata.AddToBatch(tx)
 		case <-ticker.C:
-			s.publishTxs(uidata)
+			if uidata == nil {
+				continue
+			}
+			logrus.WithField("nodeCount", len(uidata.Nodes)).Debug("push to ws")
+			bs, err := json.Marshal(uidata)
 			uidata = nil
+			if err != nil {
+				logrus.WithError(err).Error("Failed to marshal ws message")
+				continue
+			}
+			s.Push("new_unit", string(bs))
 		case <-s.quit:
 			break
 		}
 	}
-}
-
-func (s *Server) publishTxs(uidata *UIData) {
-	if uidata == nil {
-		return
-	}
-	logrus.WithField("nodeCount", len(uidata.Nodes)).Debug("push to ws")
-	bs, err := json.Marshal(uidata)
-	if err != nil {
-		logrus.WithError(err).Error("Failed to marshal ws message")
-		return
-	}
-	s.Push(messageTypeNewUnit, string(bs))
-}
-func (s *Server) publishBatch(elders map[types.Hash]types.Txi) {
-	logrus.WithFields(logrus.Fields{
-		"len": len(elders),
-	}).Debug("push confirmation to ws")
-
-	uiData := UIData{
-		Type:  messageTypeConfirmed,
-		Nodes: []Node{},
-	}
-
-	for _, tx := range elders {
-		uiData.AddToBatch(tx, false)
-	}
-
-	bs, err := json.Marshal(uiData)
-	if err != nil {
-		logrus.WithError(err).Error("Failed to marshal ws message")
-		return
-	}
-	s.Push(messageTypeConfirmed, string(bs))
 
 }

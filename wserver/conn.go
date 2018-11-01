@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"fmt"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"fmt"
 )
 
 // Conn wraps websocket.Conn with Conn. It defines to listen and read
@@ -116,20 +116,6 @@ const (
 // value: another map whose key: Conn's ID ,value: Conn
 type event2Cons struct {
 	conns map[string]map[string]*Conn
-	mu    sync.RWMutex
-}
-
-func (e *event2Cons) getFromMap(key string) (v map[string]*Conn, ok bool) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	v, ok = e.conns[key]
-	return
-}
-
-func (e *event2Cons) setMap(key string, v map[string]*Conn) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.conns[key] = v
 }
 
 func NewEvent2Cons() *event2Cons {
@@ -138,17 +124,15 @@ func NewEvent2Cons() *event2Cons {
 	}
 }
 func (e *event2Cons) Add(eventType string, conn *Conn) error {
-	conns, ok := e.getFromMap(eventType)
+	conns, ok := e.conns[eventType]
 	if !ok {
-		conns = make(map[string]*Conn)
-		e.setMap(eventType, conns)
+		e.conns[eventType] = make(map[string]*Conn)
+		conns = e.conns[eventType]
 	}
 	thisID := conn.GetID()
-	if _, ok := e.getFromMap(thisID); !ok {
+	if _, ok := conns[thisID]; !ok {
 		//not exist,add it
-		v, _ := e.getFromMap(eventType)
-		v[thisID] = conn
-		e.setMap(eventType, v)
+		e.conns[eventType][thisID] = conn
 	} else {
 		return fmt.Errorf("Conn with ID: %s already exist!", thisID)
 	}
@@ -156,12 +140,12 @@ func (e *event2Cons) Add(eventType string, conn *Conn) error {
 }
 
 func (e *event2Cons) Remove(eventType string, conn *Conn) error {
-	conns, ok := e.getFromMap(eventType)
+	conns, ok := e.conns[eventType]
 	if !ok {
 		return fmt.Errorf("No Connection with eventType: %s\n", eventType)
 	}
 	thisID := conn.GetID()
-	if _, ok := e.getFromMap(thisID); !ok {
+	if _, ok = conns[thisID]; !ok {
 		return fmt.Errorf("No connection with ID: %s\n", thisID)
 	} else {
 		delete(conns, thisID)
@@ -170,7 +154,7 @@ func (e *event2Cons) Remove(eventType string, conn *Conn) error {
 }
 
 func (e *event2Cons) Get(eventType string) ([]*Conn, error) {
-	conns, ok := e.getFromMap(eventType)
+	conns, ok := e.conns[eventType]
 	if !ok {
 		return nil, fmt.Errorf("No Connection with eventType: %s\n", eventType)
 	}

@@ -1,10 +1,10 @@
 package math
 
 import (
-	"encoding/hex"
+	"testing"
 	"fmt"
 	"github.com/stretchr/testify/assert"
-	"testing"
+	"encoding/hex"
 )
 
 func TestMoney(t *testing.T) {
@@ -34,11 +34,11 @@ func TestSerialization(t *testing.T) {
 		panic(s)
 	}
 	bytes, err := a.MarshalMsg(nil)
-	assert.NoError(t, err)
+	assert.NoError(t,err)
 	hex.Dump(bytes)
 	b := &BigInt{}
 	bytes, err = b.UnmarshalMsg(bytes)
-	assert.NoError(t, err)
+	assert.NoError(t,err)
 	fmt.Println(b.String())
 	assert.Equal(t, s, b.String())
 }

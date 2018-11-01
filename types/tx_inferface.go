@@ -1,12 +1,11 @@
 package types
 
 import (
+	"github.com/tinylib/msgp/msgp"
+	"fmt"
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"github.com/annchain/OG/common/crypto/sha3"
-	"github.com/annchain/OG/common/math"
-	"github.com/tinylib/msgp/msgp"
 	"strings"
 )
 
@@ -14,7 +13,7 @@ import (
 type TxBaseType uint
 
 const (
-	TxBaseTypeNormal TxBaseType = iota
+	TxBaseTypeNormal    TxBaseType = iota
 	TxBaseTypeSequencer
 )
 
@@ -57,9 +56,6 @@ type Txi interface {
 	GetHeight() uint64
 	GetBase() *TxBase
 	GetTxHash() Hash
-	GetNonce() uint64
-	GetValue() *math.BigInt
-	Sender() Address
 	SetHash(h Hash)
 	String() string
 
@@ -86,16 +82,12 @@ func (t *TxBase) GetType() TxBaseType {
 	return t.Type
 }
 
-func (t *TxBase) GetHeight() uint64 {
+func (t *TxBase)GetHeight()uint64 {
 	return t.Height
 }
 
 func (t *TxBase) GetTxHash() Hash {
 	return t.Hash
-}
-
-func (t *TxBase) GetNonce() uint64 {
-	return t.AccountNonce
 }
 
 func (t *TxBase) Parents() []Hash {
@@ -106,9 +98,10 @@ func (t *TxBase) SetHash(hash Hash) {
 	t.Hash = hash
 }
 
-func (t *TxBase) String() string {
-	return fmt.Sprintf("%d-[%.10s]", t.Height, t.GetTxHash().Hex())
+func (t *TxBase) String() string{
+	return fmt.Sprintf("%d-[%.10s]", t.Height,t.GetTxHash().Hex() )
 }
+
 
 func (t *TxBase) CalcTxHash() (hash Hash) {
 	var buf bytes.Buffer
@@ -136,25 +129,9 @@ func (t *TxBase) CalcMinedHash() (hash Hash) {
 	return
 }
 
-func TxisToString(txs []Txi) string {
+func TxsToString(txs []Txi) string{
 	var strs []string
-	for _, v := range txs {
-		strs = append(strs, v.String())
-	}
-	return strings.Join(strs, ", ")
-}
-
-func TxsToString(txs []*Tx) string {
-	var strs []string
-	for _, v := range txs {
-		strs = append(strs, v.String())
-	}
-	return strings.Join(strs, ", ")
-}
-
-func SeqsToString(txs []*Sequencer) string {
-	var strs []string
-	for _, v := range txs {
+	for _, v := range txs{
 		strs = append(strs, v.String())
 	}
 	return strings.Join(strs, ", ")

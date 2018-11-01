@@ -1,7 +1,6 @@
 package og
 
 import (
-	"fmt"
 	"github.com/annchain/OG/types"
 	"github.com/bluele/gcache"
 	"github.com/magiconair/properties/assert"
@@ -12,34 +11,6 @@ import (
 
 type dummyDag struct {
 	dmap map[types.Hash]types.Txi
-}
-
-func (d *dummyDag) GetSequencerById(id uint64) *types.Sequencer {
-	return nil
-}
-
-func (d *dummyDag) GetSequencerByHash(hash types.Hash) *types.Sequencer {
-	return nil
-}
-
-func (d *dummyDag) GetTxByNonce(addr types.Address, nonce uint64) types.Txi {
-	return nil
-}
-
-func (d *dummyDag) GetTxsByNumber(id uint64) []*types.Tx {
-	return nil
-}
-
-func (d *dummyDag) LatestSequencer() *types.Sequencer {
-	return nil
-}
-
-func (d *dummyDag) GetSequencer(hash types.Hash, id uint64) *types.Sequencer {
-	return nil
-}
-
-func (d *dummyDag) Genesis() *types.Sequencer {
-	return nil
 }
 
 func (d *dummyDag) init() {
@@ -57,14 +28,6 @@ func (d *dummyDag) GetTx(hash types.Hash) types.Txi {
 
 type dummyTxPool struct {
 	dmap map[types.Hash]types.Txi
-}
-
-func (d *dummyTxPool) GetLatestNonce(addr types.Address) (uint64, error) {
-	return 0, fmt.Errorf("not supported")
-}
-
-func (d *dummyTxPool) RegisterOnNewTxReceived(c chan types.Txi) {
-	return
 }
 
 func (d *dummyTxPool) init() {
@@ -114,14 +77,13 @@ func (d *dummySyncer) Enqueue(hash types.Hash) {
 
 type dummyVerifier struct{}
 
-func (d *dummyVerifier) VerifyGraphOrder(t types.Txi) bool {
-	return true
-}
-
 func (d *dummyVerifier) VerifyHash(t types.Txi) bool {
 	return true
 }
 func (d *dummyVerifier) VerifySignature(t types.Txi) bool {
+	return true
+}
+func (d *dummyVerifier) VerifySourceAddress(t types.Txi) bool {
 	return true
 }
 
@@ -134,11 +96,8 @@ func setup() *TxBuffer {
 		Syncer:                 new(dummySyncer),
 		DependencyCacheExpirationSeconds: 60,
 		NewTxQueueSize:                   100,
-		KnownCacheMaxSize:                10000,
-		KnownCacheExpirationSeconds:      30,
 	})
-	hubCOnfig := DefaultHubConfig()
-	buffer.Hub = NewHub(&hubCOnfig, 0, buffer.dag, buffer.txPool)
+
 	buffer.syncer.(*dummySyncer).dmap = make(map[types.Hash]types.Txi)
 	buffer.syncer.(*dummySyncer).buffer = buffer
 	buffer.syncer.(*dummySyncer).acquireTxDedupCache = gcache.New(100).Simple().
@@ -243,19 +202,4 @@ func TestBufferCache(t *testing.T) {
 	}
 	buffer.Stop()
 	assert.Equal(t, success, true)
-}
-
-func TestLocalHash(t *testing.T) {
-	logrus.SetLevel(logrus.DebugLevel)
-	logrus.SetFormatter(&logrus.TextFormatter{})
-	buffer := setup()
-	tx2 := sampleTx("0x02", []string{"0x00"})
-	tx3 := sampleTx("0x03", []string{"0x00"})
-	buffer.txPool.AddRemoteTx(tx2)
-	if !buffer.isLocalHash(tx2.GetTxHash()) {
-		t.Fatal("is localhash")
-	}
-	if buffer.isLocalHash(tx3.GetTxHash()) {
-		t.Fatal("is not localhash")
-	}
 }

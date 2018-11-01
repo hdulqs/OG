@@ -3,8 +3,6 @@ package types
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
-	"github.com/annchain/OG/common/math"
 	"math/rand"
 )
 
@@ -19,15 +17,11 @@ type Sequencer struct {
 	ContractHashOrder []Hash `msgp:"contractHashOrder"`
 }
 
-func (t *Sequencer) String() string {
-	return fmt.Sprintf("%s-[%.10s]-%d-id_%d-Seq", t.TxBase.String(), t.Sender().String(), t.AccountNonce, t.Id)
-}
-
 func SampleSequencer() *Sequencer {
 	return &Sequencer{Id: 99,
 		TxBase: TxBase{
 			Height:       12,
-			ParentsHash:  []Hash{HexToHash("0xCCDD"), HexToHash("0xEEFF")},
+			ParentsHash:  []Hash{HexToHash("0xCCDD"), HexToHash("0xEEFF"),},
 			Type:         TxBaseTypeSequencer,
 			AccountNonce: 234,
 		},
@@ -45,11 +39,11 @@ func RandomSequencer() *Sequencer {
 		Hash:         randomHash(),
 		Height:       rand.Uint64(),
 		ParentsHash:  []Hash{randomHash(), randomHash()},
-		Type:         TxBaseTypeSequencer,
+		Type:         TxBaseTypeNormal,
 		AccountNonce: uint64(rand.Int63n(50000)),
 	},
-		Id:                rand.Uint64(),
-		Issuer:            randomAddress(),
+		Id: rand.Uint64(),
+		Issuer: randomAddress(),
 		ContractHashOrder: []Hash{randomHash(), randomHash(), randomHash()},
 	}
 }
@@ -67,17 +61,10 @@ func (t *Sequencer) SignatureTargets() []byte {
 	return buf.Bytes()
 }
 
-func (t *Sequencer) Sender() Address {
-	return t.Issuer
-}
-
-func (t *Sequencer) GetValue() *math.BigInt {
-	return math.NewBigInt(0)
-}
-
 func (t *Sequencer) Parents() []Hash {
 	return t.ParentsHash
 }
+
 
 func (t *Sequencer) Number() uint64 {
 	return t.Id
@@ -97,8 +84,4 @@ func (t *Sequencer) Compare(tx Txi) bool {
 
 func (t *Sequencer) GetBase() *TxBase {
 	return &t.TxBase
-}
-
-func (t *Sequencer) GetHead() *SequencerHeader {
-	return NewSequencerHead(t.GetTxHash(), t.Id)
 }

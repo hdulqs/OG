@@ -26,7 +26,6 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	mrand "math/rand"
 	"net"
 	"sort"
@@ -36,6 +35,7 @@ import (
 	"github.com/annchain/OG/common/crypto"
 	"github.com/annchain/OG/p2p/netutil"
 	"github.com/annchain/OG/types"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -321,9 +321,9 @@ func (tab *Table) findnode(n *Node, targetID NodeID, reply chan<- []*Node) {
 	if err != nil || len(r) == 0 {
 		fails++
 		tab.db.updateFindFails(n.ID, fails)
-		//log.WithError(err).WithFields(log.Fields{"id": n.ID, "failcount": fails}).Debug("findnode failed")
+		log.Debug("findnode failed", "id", n.ID, "failcount", fails, "err", err)
 		if fails >= maxFindnodeFailures {
-			log.WithError(err).WithFields(logrus.Fields{"id": n.ID, "failcount": fails}).Debug("too many findnode failures, dropping")
+			log.Debug("too many findnode failures, dropping", "id", n.ID, "failcount", fails)
 			tab.delete(n)
 		}
 	} else if fails > 0 {
@@ -442,7 +442,7 @@ func (tab *Table) loadSeedNodes() {
 	for i := range seeds {
 		seed := seeds[i]
 		age := time.Since(tab.db.lastPongReceived(seed.ID))
-		log.WithFields(logrus.Fields{"id": seed.ID, "addr": seed.addr(), "age": age}).Debug("found seed node in database")
+		log.Debug("found seed node in database", "id", seed.ID, "addr", seed.addr(), "age", age)
 		tab.add(seed)
 	}
 }
@@ -466,16 +466,16 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	b := tab.buckets[bi]
 	if err == nil {
 		// The node responded, move it to the front.
-		log.WithFields(logrus.Fields{"b": bi, "id": last.ID}).Debug("revalidated node")
+		log.Debug("revalidated node", "b", bi, "id", last.ID)
 		b.bump(last)
 		return
 	}
 	// No reply received, pick a replacement or delete the node if there aren't
 	// any replacements.
 	if r := tab.replace(b, last); r != nil {
-		log.WithFields(logrus.Fields{"b": bi, "id": last.ID, "ip": last.IP, "r": r.ID, "rip": r.IP}).Debug("replaced dead node")
+		log.Debug("replaced dead node", "b", bi, "id", last.ID, "ip", last.IP, "r", r.ID, "rip", r.IP)
 	} else {
-		log.WithFields(logrus.Fields{"b": bi, "id": last.ID, "ip": last.IP}).Debug("removed dead node")
+		log.Debug("removed dead node", "b", bi, "id", last.ID, "ip", last.IP)
 	}
 }
 
@@ -607,11 +607,11 @@ func (tab *Table) addIP(b *bucket, ip net.IP) bool {
 		return true
 	}
 	if !tab.ips.Add(ip) {
-		log.WithField("ip", ip).Debug("ip exceeds table limit")
+		log.Debug("ip exceeds table limit", "ip", ip)
 		return false
 	}
 	if !b.ips.Add(ip) {
-		log.WithField("ip", ip).Debug("ip exceeds bucket limit")
+		log.Debug("ip exceeds bucket limit", "ip", ip)
 		tab.ips.Remove(ip)
 		return false
 	}

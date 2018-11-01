@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"fmt"
-	"strconv"
 
 	"github.com/annchain/OG/common/math"
 	"github.com/annchain/OG/ogdb"
@@ -11,20 +10,15 @@ import (
 )
 
 var (
-	prefixGenesisKey   = []byte("genesis")
-	prefixLatestSeqKey = []byte("latestseq")
+	prefixGenesisKey	 = []byte("genesis")
+	prefixLatestSeqKey	 = []byte("latestseq")
 
-	prefixTransactionKey     = []byte("tx")
-	prefixTxHashFlowKey      = []byte("fl")
-	contentPrefixTransaction = []byte("cptx")
-	contentPrefixSequencer   = []byte("cpsq")
+	prefixTransactionKey = []byte("tk")
+	prefixTransaction    = []byte("tx")
+	prefixSequencer      = []byte("sq")
 
-	prefixTxSeqRelationKey = []byte("tsr")
-
-	prefixAddrLatestNonceKey = []byte("aln")
-
-	prefixSeqIdKey   = []byte("si")
-	prefixTxIndexKey = []byte("ti")
+	prefixSeqIdKey		 = []byte("si")
+	prefixTxIndexKey	 = []byte("ti")
 
 	prefixAddressBalanceKey = []byte("ba")
 	// prefixContractState = []byte("con")
@@ -42,31 +36,16 @@ func transactionKey(hash types.Hash) []byte {
 	return append(prefixTransactionKey, hash.ToBytes()...)
 }
 
-func txHashFlowKey(addr types.Address, nonce uint64) []byte {
-	keybody := append(addr.ToBytes(), []byte(strconv.FormatUint(nonce, 10))...)
-	return append(prefixTxHashFlowKey, keybody...)
-}
-
-func txSeqRelationKey(hash types.Hash) []byte {
-	return append(prefixTxSeqRelationKey, hash.ToBytes()...)
-}
-
-func addrLatestNonceKey(addr types.Address) []byte {
-	return append(prefixAddrLatestNonceKey, addr.ToBytes()...)
-}
-
 func addressBalanceKey(addr types.Address) []byte {
 	return append(prefixAddressBalanceKey, addr.ToBytes()...)
 }
 
 func seqIdKey(seqid uint64) []byte {
-	suffix := prefixSeqIdKey
-	return append(prefixSeqIdKey, append([]byte(strconv.FormatUint(seqid, 10)), suffix...)...)
+	return append(prefixSeqIdKey, []byte(fmt.Sprintf("%d", seqid))...)
 }
 
 func txIndexKey(seqid uint64) []byte {
-	suffix := prefixTxIndexKey
-	return append(prefixTxIndexKey, append([]byte(strconv.FormatUint(seqid, 10)), suffix...)...)
+	return append(prefixTxIndexKey, []byte(fmt.Sprintf("%d", seqid))...)
 }
 
 type Accessor struct {
@@ -77,7 +56,7 @@ func NewAccessor(db ogdb.Database) *Accessor {
 	return &Accessor{db: db}
 }
 
-// ReadGenesis get genesis sequencer from db.
+// ReadGenesis get genesis sequencer from db. 
 // return nil if there is no genesis.
 func (da *Accessor) ReadGenesis() *types.Sequencer {
 	data, _ := da.db.Get(genesisKey())
@@ -101,7 +80,7 @@ func (da *Accessor) WriteGenesis(genesis *types.Sequencer) error {
 	return da.db.Put(genesisKey(), data)
 }
 
-// ReadLatestSequencer get latest sequencer from db.
+// ReadLatestSequencer get latest sequencer from db. 
 // return nil if there is no sequencer.
 func (da *Accessor) ReadLatestSequencer() *types.Sequencer {
 	data, _ := da.db.Get(latestSequencerKey())
@@ -131,15 +110,15 @@ func (da *Accessor) ReadTransaction(hash types.Hash) types.Txi {
 	if len(data) == 0 {
 		return nil
 	}
-	prefixLen := len(contentPrefixTransaction)
+	prefixLen := len(prefixTransaction)
 	prefix := data[:prefixLen]
 	data = data[prefixLen:]
-	if bytes.Equal(prefix, contentPrefixTransaction) {
+	if bytes.Equal(prefix, prefixTransaction) {
 		var tx types.Tx
 		tx.UnmarshalMsg(data)
 		return &tx
 	}
-	if bytes.Equal(prefix, contentPrefixSequencer) {
+	if bytes.Equal(prefix, prefixSequencer) {
 		var sq types.Sequencer
 		sq.UnmarshalMsg(data)
 		return &sq
@@ -147,77 +126,17 @@ func (da *Accessor) ReadTransaction(hash types.Hash) types.Txi {
 	return nil
 }
 
-// ReadTxByNonce get tx from db by sender's address and nonce.
-func (da *Accessor) ReadTxByNonce(addr types.Address, nonce uint64) types.Txi {
-	data, _ := da.db.Get(txHashFlowKey(addr, nonce))
-	if len(data) == 0 {
-		return nil
-	}
-	hash := types.BytesToHash(data)
-	return da.ReadTransaction(hash)
-}
-
-// ReadAddrLatestNonce get latest nonce of an address
-func (da *Accessor) ReadAddrLatestNonce(addr types.Address) (uint64, error) {
-	has, _ := da.HasAddrLatestNonce(addr)
-	if !has {
-		return 0, fmt.Errorf("not exists")
-	}
-	data, err := da.db.Get(addrLatestNonceKey(addr))
-	if len(data) == 0 {
-		return 0, err
-	}
-	nonce, parseErr := strconv.ParseUint(string(data), 10, 64)
-	if parseErr != nil {
-		return 0, fmt.Errorf("parse nonce from bytes to uint64 error: %v", parseErr)
-	}
-	return nonce, nil
-}
-
-// HasAddrLatestNonce returns true if addr already sent some txs.
-func (da *Accessor) HasAddrLatestNonce(addr types.Address) (bool, error) {
-	return da.db.Has(addrLatestNonceKey(addr))
-}
-
-// WriteTransaction write the tx or sequencer into ogdb. It first write
-// the latest nonce of the tx's sender, then write the ([address, nonce] -> hash)
-// relation into ogdb, finally write the tx itself into db. Data will be
-// overwritten if it already exists in db.
+// WriteTransaction write the tx or sequencer into ogdb, data will be overwritten
+// if it already exist in db.
 func (da *Accessor) WriteTransaction(tx types.Txi) error {
 	var prefix, data []byte
 	var err error
-
-	// write tx latest nonce
-	var curnonce = uint64(0)
-	has, _ := da.HasAddrLatestNonce(tx.Sender())
-	if has {
-		curnonce, err = da.ReadAddrLatestNonce(tx.Sender())
-		if err != nil {
-			return fmt.Errorf("can't read current latest nonce of addr %s, err: %v", tx.Sender().String(), err)
-		}
-	}
-	if (tx.GetNonce() > curnonce) || ((tx.GetNonce() == uint64(0)) && !has) {
-		// write nonce if curnonce is larger then origin one
-		data = []byte(strconv.FormatUint(tx.GetNonce(), 10))
-		if err = da.db.Put(addrLatestNonceKey(tx.Sender()), data); err != nil {
-			return fmt.Errorf("write latest nonce err: %v", err)
-		}
-	}
-
-	// write tx hash flow, allow the user query tx hash by its address and nonce.
-	data = tx.GetTxHash().ToBytes()
-	err = da.db.Put(txHashFlowKey(tx.Sender(), tx.GetNonce()), data)
-	if err != nil {
-		return fmt.Errorf("write tx hash flow to db err: %v", err)
-	}
-
-	// write tx
 	switch tx := tx.(type) {
 	case *types.Tx:
-		prefix = contentPrefixTransaction
+		prefix = prefixTransaction
 		data, err = tx.MarshalMsg(nil)
 	case *types.Sequencer:
-		prefix = contentPrefixSequencer
+		prefix = prefixSequencer
 		data, err = tx.MarshalMsg(nil)
 	default:
 		return fmt.Errorf("unknown tx type, must be *Tx or *Sequencer")
@@ -226,31 +145,7 @@ func (da *Accessor) WriteTransaction(tx types.Txi) error {
 		return fmt.Errorf("marshal tx %s err: %v", tx.GetTxHash().String(), err)
 	}
 	data = append(prefix, data...)
-	err = da.db.Put(transactionKey(tx.GetTxHash()), data)
-	if err != nil {
-		return fmt.Errorf("write tx to db err: %v", err)
-	}
-
-	return nil
-}
-
-// ReadTxSeqRelation get the bound seq id of a tx
-func (da *Accessor) ReadTxSeqRelation(hash types.Hash) (uint64, error) {
-	data, err := da.db.Get(txSeqRelationKey(hash))
-	if err != nil {
-		return 0, err
-	}
-	seqid, errToUint := strconv.ParseUint(string(data), 10, 64)
-	if errToUint != nil {
-		return 0, errToUint
-	}
-	return seqid, nil
-}
-
-// WriteTxSeqRelation bind the seq id to a tx hash
-func (da *Accessor) WriteTxSeqRelation(hash types.Hash, seqid uint64) error {
-	data := []byte(strconv.FormatUint(seqid, 10))
-	return da.db.Put(txSeqRelationKey(hash), data)
+	return da.db.Put(transactionKey(tx.GetTxHash()), data)
 }
 
 // DeleteTransaction delete the tx or sequencer.
@@ -347,7 +242,7 @@ func (da *Accessor) WriteSequencerById(seq *types.Sequencer) error {
 	return da.db.Put(seqIdKey(seq.Id), data)
 }
 
-// ReadIndexedTxHashs get a list of txs that is confirmed by the sequencer that
+// ReadIndexedTxHashs get a list of txs that is confirmed by the sequencer that 
 // holds the id 'seqid'.
 func (da *Accessor) ReadIndexedTxHashs(seqid uint64) (*types.Hashs, error) {
 	data, _ := da.db.Get(txIndexKey(seqid))

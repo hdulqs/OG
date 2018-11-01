@@ -21,7 +21,6 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/sirupsen/logrus"
 
 	"github.com/annchain/OG/common"
 	"github.com/annchain/OG/common/mclock"
@@ -29,14 +28,13 @@ import (
 	"github.com/annchain/OG/p2p/discv5"
 	"github.com/annchain/OG/p2p/nat"
 	"github.com/annchain/OG/p2p/netutil"
+	log "github.com/sirupsen/logrus"
 
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
-
 
 const (
 	defaultDialTimeout = 15 * time.Second
@@ -142,7 +140,8 @@ type Config struct {
 	// whenever a message is sent to or received from a peer
 	EnableMsgEvents bool
 
-
+	// Logger is a custom logger to use with the p2p.Server.
+	Logger log.Logger `toml:",omitempty"`
 }
 
 // Server manages all peer connections.
@@ -191,7 +190,7 @@ type peerDrop struct {
 type connFlag int32
 
 const (
-	dynDialedConn connFlag = 1 << iota
+	dynDialedConn    connFlag = 1 << iota
 	staticDialedConn
 	inboundConn
 	trustedConn
@@ -200,7 +199,7 @@ const (
 // conn wraps a network connection with information gathered
 // during the two handshakes.
 type conn struct {
-	fd net.Conn
+	fd    net.Conn
 	transport
 	flags connFlag
 	cont  chan error      // The run loop uses cont to signal errors to SetupConn.
@@ -257,6 +256,16 @@ func (c *conn) is(f connFlag) bool {
 	return flags&f != 0
 }
 
+/*
+func (srv *P2PServer) Name() string {
+	return fmt.Sprintf("P2PServer at port %s", srv.port)
+}
+
+func (srv *P2PServer) Close() {
+	for _, peer := range srv.peers {
+		peer.Close()
+}
+*/
 func (c *conn) set(f connFlag, val bool) {
 	for {
 		oldFlags := connFlag(atomic.LoadInt32((*int32)(&c.flags)))
@@ -420,7 +429,7 @@ func (s *sharedUDPConn) Close() error {
 }
 
 func (srv *Server) Name() string {
-	return fmt.Sprintf("P2PServer address %s ,nodeName %s", srv.ListenAddr, srv.NodeName)
+	return srv.NodeName
 }
 
 func (srv *Server) Start() {
@@ -571,7 +580,7 @@ func (srv *Server) startListening() error {
 	if !laddr.IP.IsLoopback() && srv.NAT != nil {
 		srv.loopWG.Add(1)
 		go func() {
-			nat.Map(srv.NAT, srv.quit, "tcp", laddr.Port, laddr.Port, "og p2p")
+			nat.Map(srv.NAT, srv.quit, "tcp", laddr.Port, laddr.Port, "ethereum p2p")
 			srv.loopWG.Done()
 		}()
 	}
@@ -630,13 +639,10 @@ func (srv *Server) run(dialstate dialer) {
 			queuedTasks = append(queuedTasks, startTasks(nt)...)
 		}
 	}
-	triggerTasks := true
+
 running:
 	for {
-		if triggerTasks {
-			scheduleTasks()
-		}
-		triggerTasks = true
+		scheduleTasks()
 
 		select {
 		case <-srv.quit:
@@ -646,13 +652,13 @@ running:
 			// This channel is used by AddPeer to add to the
 			// ephemeral static peer list. Add it to the dialer,
 			// it will keep the node connected.
-			log.WithField("node", n).Debug("Adding static node")
+			log.WithField("node",n).Debug("Adding static node")
 			dialstate.addStatic(n)
 		case n := <-srv.removestatic:
 			// This channel is used by RemovePeer to send a
 			// disconnect request to a peer and begin the
 			// stop keeping the node connected.
-			log.WithField("node", n).Debug("Removing static node")
+			log.WithField("node",n).Debug("Removing static node")
 			dialstate.removeStatic(n)
 			if p, ok := peers[n.ID]; ok {
 				p.Disconnect(DiscRequested)
@@ -660,7 +666,7 @@ running:
 		case n := <-srv.addtrusted:
 			// This channel is used by AddTrustedPeer to add an enode
 			// to the trusted node set.
-			log.WithField("node", n).Debug("Adding trusted node")
+			log.WithField("node",n).Debug("Adding trusted node")
 			trusted[n.ID] = true
 			// Mark any already-connected peer as trusted
 			if p, ok := peers[n.ID]; ok {
@@ -669,7 +675,7 @@ running:
 		case n := <-srv.removetrusted:
 			// This channel is used by RemoveTrustedPeer to remove an enode
 			// from the trusted node set.
-			log.WithField("node", n).Debug("Removing trusted node")
+			log.WithField("node",n).Debug("Removing trusted node")
 			if _, ok := trusted[n.ID]; ok {
 				delete(trusted, n.ID)
 			}
@@ -681,7 +687,6 @@ running:
 			// This channel is used by Peers and PeerCount.
 			op(peers)
 			srv.peerOpDone <- struct{}{}
-			//triggerTasks = false
 		case t := <-taskdone:
 			// A task got done. Tell dialstate about it so it
 			// can update its state and remove it from the active
@@ -705,7 +710,6 @@ running:
 		case c := <-srv.addpeer:
 			// At this point the connection is past the protocol handshake.
 			// Its capabilities are known and the remote identity is verified.
-			log.Info("Add peer=========")
 			err := srv.protoHandshakeChecks(peers, inboundCount, c)
 			if err == nil {
 				// The handshakes are done and it passed all checks.
@@ -716,11 +720,10 @@ running:
 					//p.events = &srv.peerFeed
 				}
 				name := truncateName(c.name)
-				log.WithFields(logrus.Fields{"name": name, "addr": c.fd.RemoteAddr(), "peers": len(peers) + 1}).
+				log.WithFields(log.Fields{"name": name, "addr": c.fd.RemoteAddr(), "peers": len(peers)+1}).
 					Debug("Adding p2p peer")
 				go srv.runPeer(p)
 				peers[c.id] = p
-				log.WithField("peer", c.id).Info("Add peer=========OK")
 				if p.Inbound() {
 					inboundCount++
 				}
@@ -736,7 +739,7 @@ running:
 		case pd := <-srv.delpeer:
 			// A peer disconnected.
 			d := common.PrettyDuration(mclock.Now() - pd.created)
-			log.WithFields(logrus.Fields{"duration": d, "peers": len(peers) - 1, "req": pd.requested}).
+			log.WithFields(log.Fields{"duration": d, "peers": len(peers)-1, "req": pd.requested}).
 				WithError(pd.err).
 				Debug("Removing p2p peer")
 			delete(peers, pd.ID())
@@ -781,7 +784,7 @@ func (srv *Server) protoHandshakeChecks(peers map[discover.NodeID]*Peer, inbound
 
 func (srv *Server) encHandshakeChecks(peers map[discover.NodeID]*Peer, inboundCount int, c *conn) error {
 	switch {
-	case !c.is(trustedConn|staticDialedConn) && len(peers) >= srv.MaxPeers:
+	case !c.is(trustedConn | staticDialedConn) && len(peers) >= srv.MaxPeers:
 		return DiscTooManyPeers
 	case !c.is(trustedConn) && c.is(inboundConn) && inboundCount >= srv.maxInboundConns():
 		return DiscTooManyPeers
@@ -858,7 +861,7 @@ func (srv *Server) listenLoop() {
 			}
 		}
 
-		fd = newMeteredConn(fd, true)
+		//fd = newMeteredConn(fd, true)
 		log.WithField("addr", fd.RemoteAddr()).Debug("Accepted connection")
 		go func() {
 			srv.SetupConn(fd, inboundConn, nil)
@@ -955,12 +958,11 @@ func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *discover.Node) e
 	}
 	// Run the encryption handshake.
 	var err error
-	log.WithField("c", c.fd.RemoteAddr()).Info("setupConn")
 	if c.id, err = c.doEncHandshake(srv.PrivateKey, dialDest); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{"conn": c.flags, "addr": c.fd.RemoteAddr()}).Debug("Failed RLPx handshake")
+		log.WithError(err).WithFields(log.Fields{"conn": c.flags, "addr": c.fd.RemoteAddr()}).Debug("Failed RLPx handshake")
 		return err
 	}
-	clog := logrus.Fields{"id": c.id, "addr": c.fd.RemoteAddr(), "conn": c.flags}
+	clog := log.Fields{"id": c.id, "addr": c.fd.RemoteAddr(), "conn": c.flags}
 	// For dialed connections, check that the remote public key matches.
 	if dialDest != nil && c.id != dialDest.ID {
 		log.WithField("want", dialDest.ID).WithField("actual", c).Debug("Dialed identity mismatch")
@@ -1050,7 +1052,6 @@ func (srv *Server) runPeer(p *Peer) {
 // NodeInfo represents a short summary of the information known about the host.
 type NodeInfo struct {
 	ID    string `json:"id"`    // Unique node identifier (also the encryption key)
-	ShortId string `json:"short_id"`
 	Name  string `json:"name"`  // Name of the node, including client type, version, OS, custom data
 	Enode string `json:"enode"` // Enode URL for adding this peer from remote peers
 	IP    string `json:"ip"`    // IP address of the node
@@ -1071,7 +1072,6 @@ func (srv *Server) NodeInfo() *NodeInfo {
 		Name:       srv.NodeName,
 		Enode:      node.String(),
 		ID:         node.ID.String(),
-		ShortId:    node.ID.TerminalString(),
 		IP:         net.IP(node.IP).String(),
 		ListenAddr: srv.ListenAddr,
 		Protocols:  make(map[string]interface{}),
