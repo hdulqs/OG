@@ -15,11 +15,11 @@ type RpcServer struct {
 	router *gin.Engine
 	server *http.Server
 	port   string
-	C      *RpcControler
+	C      *RpcController
 }
 
 func NewRpcServer(port string) *RpcServer {
-	c := RpcControler{}
+	c := RpcController{}
 	router := c.Newrouter()
 	server := &http.Server{
 		Addr:    ":" + port,
@@ -49,7 +49,7 @@ func (srv *RpcServer) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeoutSeconds*time.Second)
 	defer cancel()
 	if err := srv.server.Shutdown(ctx); err != nil {
-		logrus.WithError(err).Fatalf("error while shutting down the Http server")
+		logrus.WithError(err).Error("error while shutting down the Http server")
 	}
 	logrus.Infof("http server Stopped")
 }

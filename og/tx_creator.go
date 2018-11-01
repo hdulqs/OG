@@ -1,12 +1,12 @@
 package og
 
 import (
-	"github.com/annchain/OG/common/math"
-	"github.com/annchain/OG/types"
 	"github.com/annchain/OG/common/crypto"
-	"time"
+	"github.com/annchain/OG/common/math"
 	"github.com/annchain/OG/og/miner"
+	"github.com/annchain/OG/types"
 	"github.com/sirupsen/logrus"
+	"time"
 )
 
 type TipGenerator interface {
@@ -22,6 +22,7 @@ type TxCreator struct {
 	MaxMinedHash       types.Hash   // The difficultiy of MinedHash
 	MaxConnectingTries int          // Max number of times to find a pair of parents. If exceeded, try another nonce.
 	DebugNodeId        int          // Only for debug. This value indicates tx sender and is temporarily saved to tx.height
+	GraphVerifier      Verifier     // To verify the graph structure
 }
 
 func (m *TxCreator) NewUnsignedTx(from types.Address, to types.Address, value *math.BigInt, accountNonce uint64) types.Txi {
@@ -48,10 +49,11 @@ func (m *TxCreator) NewSignedTx(from types.Address, to types.Address, value *mat
 	return tx
 }
 
-func (m *TxCreator) NewUnsignedSequencer(id uint64, contractHashOrder []types.Hash, accountNonce uint64) types.Txi {
+func (m *TxCreator) NewUnsignedSequencer(issuer types.Address, id uint64, contractHashOrder []types.Hash, accountNonce uint64) types.Txi {
 	tx := types.Sequencer{
 		Id:                id,
 		ContractHashOrder: contractHashOrder,
+		Issuer:            issuer,
 		TxBase: types.TxBase{
 			AccountNonce: accountNonce,
 			Type:         types.TxBaseTypeSequencer,
@@ -61,8 +63,8 @@ func (m *TxCreator) NewUnsignedSequencer(id uint64, contractHashOrder []types.Ha
 	return &tx
 }
 
-func (m *TxCreator) NewSignedSequencer(id uint64, contractHashOrder []types.Hash, accountNonce uint64, privateKey crypto.PrivateKey) types.Txi {
-	tx := m.NewUnsignedSequencer(id, contractHashOrder, accountNonce)
+func (m *TxCreator) NewSignedSequencer(issuer types.Address, id uint64, contractHashOrder []types.Hash, accountNonce uint64, privateKey crypto.PrivateKey) types.Txi {
+	tx := m.NewUnsignedSequencer(issuer, id, contractHashOrder, accountNonce)
 	// do sign work
 	signature := m.Signer.Sign(privateKey, tx.SignatureTargets())
 	tx.GetBase().Signature = signature.Bytes
@@ -71,9 +73,15 @@ func (m *TxCreator) NewSignedSequencer(id uint64, contractHashOrder []types.Hash
 }
 
 // validateGraphStructure validates if parents are not conflicted, not double spending or other misbehaviors
-// TODO: fill this.
 func (m *TxCreator) validateGraphStructure(parents []types.Txi) (ok bool) {
-	return true
+	ok = true
+	for _, parent := range parents {
+		ok = ok && m.GraphVerifier.Verify(parent)
+		if !ok {
+			return
+		}
+	}
+	return
 }
 
 func (m *TxCreator) tryConnect(tx types.Txi, parents []types.Txi) (txRet types.Txi, ok bool) {
@@ -90,11 +98,15 @@ func (m *TxCreator) tryConnect(tx types.Txi, parents []types.Txi) (txRet types.T
 		logrus.WithField("hash", hash).WithField("parent", types.HashesToString(tx.Parents())).Debug("new tx connected")
 		// yes
 		txRet = tx
-		ok = m.validateGraphStructure(parents)
+		//ok = m.validateGraphStructure(parents)
+		ok = m.GraphVerifier.Verify(tx)
+		if !ok {
+			logrus.Warn("NOT OK")
+		}
 		logrus.WithFields(logrus.Fields{
 			"tx": tx,
 			"ok": ok,
-		}).Debugf("validate graph structure")
+		}).Debugf("validate graph structure for tx being connected")
 		return txRet, ok
 	} else {
 		//logrus.Debugf("Failed to connected %s %s", hash.Hex(), m.MaxTxHash.Hex())
@@ -115,7 +127,7 @@ func (m *TxCreator) SealTx(tx types.Txi) (ok bool) {
 	defer close(respChan)
 	done := false
 	for !done {
-		mineCount ++
+		mineCount++
 		go m.Miner.StartMine(tx, m.MaxMinedHash, minedNonce+1, respChan)
 		select {
 		case minedNonce = <-respChan:
@@ -123,7 +135,7 @@ func (m *TxCreator) SealTx(tx types.Txi) (ok bool) {
 			//logrus.Debugf("Total time for Mining: %d ns, %d times", time.Since(timeStart).Nanoseconds(), minedNonce)
 			// pick up parents.
 			for i := 0; i < m.MaxConnectingTries; i++ {
-				connectionTries ++
+				connectionTries++
 				txs := m.TipGenerator.GetRandomTips(2)
 
 				//logrus.Debugf("Got %d Tips: %s", len(txs), types.HashesToString(tx.Parents()))
@@ -144,9 +156,9 @@ func (m *TxCreator) SealTx(tx types.Txi) (ok bool) {
 		}
 	}
 	logrus.WithFields(logrus.Fields{
-		"elapsedns": time.Since(timeStart).Nanoseconds(),
-		"re-mine": mineCount,
-		"nonce": minedNonce,
+		"elapsedns":  time.Since(timeStart).Nanoseconds(),
+		"re-mine":    mineCount,
+		"nonce":      minedNonce,
 		"re-connect": connectionTries,
 	}).Debugf("total time for mining")
 	return true

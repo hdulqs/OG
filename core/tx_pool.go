@@ -1,24 +1,28 @@
 package core
 
 import (
+	"container/list"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
-	"container/list"
 
-	log "github.com/sirupsen/logrus"
-	"github.com/annchain/OG/types"
 	"github.com/annchain/OG/common/math"
+	"github.com/annchain/OG/types"
+	log "github.com/sirupsen/logrus"
 	"math/rand"
 )
+
+type TxType int
 
 const (
 	TxTypeGenesis TxType = iota
 	TxTypeLocal
 	TxTypeRemote
+	TxTypeRejudge
 )
 
-type TxType int
+type TxStatus int
 
 const (
 	TxStatusNotExist TxStatus = iota
@@ -27,8 +31,6 @@ const (
 	TxStatusBadTx
 	TxStatusPending
 )
-
-type TxStatus int
 
 func (ts *TxStatus) String() string {
 	switch *ts {
@@ -47,57 +49,101 @@ func (ts *TxStatus) String() string {
 	}
 }
 
+type TxQuality int
+
+const (
+	TxQualityIsBad TxQuality = iota
+	TxQualityIsGood
+	TxQualityIsFatal
+)
+
 type TxPool struct {
 	conf TxPoolConfig
 	dag  *Dag
 
-	queue       chan *txEvent // queue stores txs that need to validate later
-	tips        *TxMap        // tips stores all the tips
-	badtxs      *TxMap
-	poolPending *pending
-	txLookup    *txLookUp // txLookUp stores all the txs for external query
+	queue    chan *txEvent // queue stores txs that need to validate later
+	tips     *TxMap        // tips stores all the tips
+	badtxs   *TxMap
+	pendings *TxMap
+	flows    *AccountFlows
+	txLookup *txLookUp // txLookUp stores all the txs for external query
 
 	close chan struct{}
 
 	mu sync.RWMutex
 	wg sync.WaitGroup // for TxPool Stop()
 
-	OnNewTxReceived []chan types.Txi // for notifications of new txs.
+	OnNewTxReceived      []chan types.Txi                // for notifications of new txs.
+	OnBatchConfirmed     []chan map[types.Hash]types.Txi // for notifications of confirmation.
+	OnNewLatestSequencer chan bool                       //for broadcasting new latest sequencer to record height
+
+	// timeout detections on queues
+	timeoutPoolQueue       *time.Timer
+	timeoutSubscriber      *time.Timer
+	timeoutConfirmation    *time.Timer
+	timeoutLatestSequencer *time.Timer
 }
 
-func (pool *TxPool) GetBenchmarks() map[string]int {
-	return map[string]int{
-		"queue": len(pool.queue),
-		"event": len(pool.OnNewTxReceived),
-		"txlookup": len(pool.txLookup.txs),
-		"tips": len(pool.tips.txs),
-		"badtxs": len(pool.badtxs.txs),
+func (pool *TxPool) GetBenchmarks() map[string]interface{} {
+	return map[string]interface{}{
+		"queue":      len(pool.queue),
+		"event":      len(pool.OnNewTxReceived),
+		"txlookup":   len(pool.txLookup.txs),
+		"tips":       len(pool.tips.txs),
+		"badtxs":     len(pool.badtxs.txs),
 		"latest_seq": int(pool.dag.latestSeqencer.Id),
 	}
 }
 
 func NewTxPool(conf TxPoolConfig, d *Dag) *TxPool {
 	pool := &TxPool{
-		conf:            conf,
-		dag:             d,
-		queue:           make(chan *txEvent, conf.QueueSize),
-		tips:            NewTxMap(),
-		badtxs:          NewTxMap(),
-		txLookup:        newTxLookUp(),
-		close:           make(chan struct{}),
-		OnNewTxReceived: []chan types.Txi{},
+		conf:                   conf,
+		dag:                    d,
+		queue:                  make(chan *txEvent, conf.QueueSize),
+		tips:                   NewTxMap(),
+		badtxs:                 NewTxMap(),
+		pendings:               NewTxMap(),
+		flows:                  NewAccountFlows(),
+		txLookup:               newTxLookUp(),
+		close:                  make(chan struct{}),
+		OnNewTxReceived:        []chan types.Txi{},
+		OnBatchConfirmed:       []chan map[types.Hash]types.Txi{},
+		OnNewLatestSequencer:   make(chan bool),
+		timeoutPoolQueue:       time.NewTimer(time.Millisecond * time.Duration(conf.TimeOutPoolQueue)),
+		timeoutSubscriber:      time.NewTimer(time.Millisecond * time.Duration(conf.TimeoutSubscriber)),
+		timeoutConfirmation:    time.NewTimer(time.Millisecond * time.Duration(conf.TimeoutConfirmation)),
+		timeoutLatestSequencer: time.NewTimer(time.Millisecond * time.Duration(conf.TimeoutLatestSequencer)),
 	}
-	pool.poolPending = NewPending(pool)
 	return pool
 }
 
 type TxPoolConfig struct {
-	QueueSize     int `mapstructure:"queue_size"`
-	TipsSize      int `mapstructure:"tips_size"`
-	ResetDuration int `mapstructure:"reset_duration"`
-	TxVerifyTime  int `mapstructure:"tx_verify_time"`
-	TxValidTime   int `mapstructure:"tx_valid_time"`
+	QueueSize              int `mapstructure:"queue_size"`
+	TipsSize               int `mapstructure:"tips_size"`
+	ResetDuration          int `mapstructure:"reset_duration"`
+	TxVerifyTime           int `mapstructure:"tx_verify_time"`
+	TxValidTime            int `mapstructure:"tx_valid_time"`
+	TimeOutPoolQueue       int `mapstructure:"timeout_pool_queue_ms"`
+	TimeoutSubscriber      int `mapstructure:"timeout_subscriber_ms"`
+	TimeoutConfirmation    int `mapstructure:"timeout_confirmation_ms"`
+	TimeoutLatestSequencer int `mapstructure:"timeout_latest_seq_ms"`
 }
+
+func DefaultTxPoolConfig() TxPoolConfig {
+	config := TxPoolConfig{
+		QueueSize:              100,
+		TipsSize:               1000,
+		ResetDuration:          10,
+		TxVerifyTime:           2,
+		TxValidTime:            100,
+		TimeOutPoolQueue:       10000,
+		TimeoutSubscriber:      10000,
+		TimeoutConfirmation:    10000,
+		TimeoutLatestSequencer: 10000,
+	}
+	return config
+}
+
 type txEvent struct {
 	txEnv        *txEnvelope
 	callbackChan chan error
@@ -140,20 +186,104 @@ func (pool *TxPool) Name() string {
 	return "TxPool"
 }
 
-// PoolStatus returns the current status of txpool.
-func (pool *TxPool) PoolStatus() (int, int) {
+// PoolStatus returns the current number of
+// tips, bad txs and pending txs stored in pool.
+func (pool *TxPool) PoolStatus() (int, int, int) {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.poolStatus()
+}
+func (pool *TxPool) poolStatus() (int, int, int) {
 	return pool.txLookup.Stats()
 }
 
 // Get get a transaction or sequencer according to input hash,
 // if tx not exists return nil
 func (pool *TxPool) Get(hash types.Hash) types.Txi {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.get(hash)
+}
+
+func (pool *TxPool) get(hash types.Hash) types.Txi {
 	return pool.txLookup.Get(hash)
+}
+
+func (pool *TxPool) Has(hash types.Hash) bool {
+	return pool.Get(hash) != nil
+}
+
+func (pool *TxPool) IsLocalHash(hash types.Hash) bool {
+	if pool.Has(hash) {
+		return true
+	}
+	if pool.dag.Has(hash) {
+		return true
+	}
+	return false
+}
+
+// GetHashOrder returns a hash list of txs in pool, ordered by the
+// time that txs added into pool.
+func (pool *TxPool) GetHashOrder() []types.Hash {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.getHashOrder()
+}
+func (pool *TxPool) getHashOrder() []types.Hash {
+	return pool.txLookup.GetOrder()
+}
+
+// GetByNonce get a tx or sequencer from account flows by sender's address and tx's nonce.
+func (pool *TxPool) GetByNonce(addr types.Address, nonce uint64) types.Txi {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.getByNonce(addr, nonce)
+}
+func (pool *TxPool) getByNonce(addr types.Address, nonce uint64) types.Txi {
+	return pool.flows.GetTxByNonce(addr, nonce)
+}
+
+// GetLatestNonce get the latest nonce of an address
+func (pool *TxPool) GetLatestNonce(addr types.Address) (uint64, error) {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.flows.GetLatestNonce(addr)
 }
 
 // GetStatus gets the current status of a tx
 func (pool *TxPool) GetStatus(hash types.Hash) TxStatus {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.getStatus(hash)
+}
+func (pool *TxPool) getStatus(hash types.Hash) TxStatus {
 	return pool.txLookup.Status(hash)
+}
+
+func (pool *TxPool) RegisterOnNewTxReceived(c chan types.Txi) {
+	pool.OnNewTxReceived = append(pool.OnNewTxReceived, c)
+}
+
+// GetRandomTips returns n tips randomly.
+func (pool *TxPool) GetRandomTips(n int) (v []types.Txi) {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	// select n random hashes
+	values := pool.tips.GetAllValues()
+	indices := generateRandomIndices(n, len(values))
+
+	for _, i := range indices {
+		v = append(v, values[i])
+	}
+	return v
 }
 
 // generate [count] unique random numbers within range [0, upper)
@@ -173,26 +303,6 @@ func generateRandomIndices(count int, upper int) []int {
 		arr = append(arr, k)
 	}
 	return arr
-}
-
-// GetRandomTips returns n tips randomly.
-func (pool *TxPool) GetRandomTips(n int) (v []types.Txi) {
-	pool.mu.RLock()
-	defer pool.mu.RUnlock()
-
-	// select n random hashes
-	values := pool.tips.GetAllValues()
-	//log.WithField("parent", types.TxsToString(values)).Debug("current tips")
-	indices := generateRandomIndices(n, len(values))
-	//log.WithFields(log.Fields{
-	//	"require":   n,
-	//	"totalTips": len(values),
-	//}).Info("getting random tips")
-
-	for _, i := range indices {
-		v = append(v, values[i])
-	}
-	return v
 }
 
 // GetAllTips returns all the tips in TxPool.
@@ -236,6 +346,31 @@ func (pool *TxPool) AddRemoteTxs(txs []types.Txi) []error {
 	return result
 }
 
+// Remove totally removes a tx from pool, it checks badtxs, tips,
+// pendings and txlookup.
+func (pool *TxPool) Remove(tx types.Txi) {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	pool.remove(tx)
+}
+
+func (pool *TxPool) remove(tx types.Txi) {
+	status := pool.getStatus(tx.GetTxHash())
+	if status == TxStatusBadTx {
+		pool.badtxs.Remove(tx.GetTxHash())
+	}
+	if status == TxStatusTip {
+		pool.tips.Remove(tx.GetTxHash())
+		pool.flows.Remove(tx)
+	}
+	if status == TxStatusPending {
+		pool.pendings.Remove(tx.GetTxHash())
+		pool.flows.Remove(tx)
+	}
+	pool.txLookup.Remove(tx.GetTxHash())
+}
+
 func (pool *TxPool) loop() {
 	defer log.Debugf("TxPool.loop() terminates")
 
@@ -252,21 +387,26 @@ func (pool *TxPool) loop() {
 		case txEvent := <-pool.queue:
 			var err error
 			tx := txEvent.txEnv.tx
-			if pool.Get(tx.GetTxHash()) != nil {
+			// check if tx is duplicate
+			if pool.get(tx.GetTxHash()) != nil {
 				log.WithField("tx", tx).Warn("Duplicate tx found in txlookup")
+				txEvent.callbackChan <- types.ErrDuplicateTx
 				continue
 			}
+
 			pool.txLookup.Add(txEvent.txEnv)
+			pool.mu.Lock()
 			switch tx := tx.(type) {
 			case *types.Tx:
 				err = pool.commit(tx)
 			case *types.Sequencer:
 				err = pool.confirm(tx)
 			}
-			if err != nil{
+			pool.mu.Unlock()
+
+			if err != nil {
 				pool.txLookup.Remove(txEvent.txEnv.tx.GetTxHash())
 			}
-
 			txEvent.callbackChan <- err
 
 			// TODO case reset?
@@ -278,9 +418,6 @@ func (pool *TxPool) loop() {
 
 // addTx adds tx to the pool queue and wait to become tip after validation.
 func (pool *TxPool) addTx(tx types.Txi, senderType TxType) error {
-	timer := time.NewTimer(time.Duration(pool.conf.TxVerifyTime) * time.Second)
-	defer timer.Stop()
-
 	te := &txEvent{
 		callbackChan: make(chan error),
 		txEnv: &txEnvelope{
@@ -289,16 +426,19 @@ func (pool *TxPool) addTx(tx types.Txi, senderType TxType) error {
 			status: TxStatusQueue,
 		},
 	}
-
-	pool.queue <- te
-
-	//select {
-	//case pool.queue <- te:
-	// race condition
-	//pool.txLookup.Add(te.txEnv)
-	//case <-timer.C:
-	//	return fmt.Errorf("addTx timeout, cannot add tx to queue, tx hash: %s", tx.String())
-	//}
+loop3:
+	for {
+		if !pool.timeoutPoolQueue.Stop() {
+			<-pool.timeoutPoolQueue.C
+		}
+		pool.timeoutPoolQueue.Reset(time.Second * 10)
+		select {
+		case <-pool.timeoutPoolQueue.C:
+			log.WithField("tx", te.txEnv.tx).Warn("timeout on channel writing: addTx")
+		case pool.queue <- te:
+			break loop3
+		}
+	}
 
 	// waiting for callback
 	select {
@@ -309,7 +449,20 @@ func (pool *TxPool) addTx(tx types.Txi, senderType TxType) error {
 		// notify all subscribers of newTxEvent
 		for _, subscriber := range pool.OnNewTxReceived {
 			log.Debug("notify subscriber")
-			subscriber <- tx
+		loop:
+			for {
+				if !pool.timeoutSubscriber.Stop() {
+					<-pool.timeoutSubscriber.C
+				}
+				pool.timeoutSubscriber.Reset(time.Second * 10)
+				select {
+				case <-pool.timeoutSubscriber.C:
+					log.WithField("tx", tx).Warn("timeout on channel writing: subscriber")
+				case subscriber <- tx:
+					break loop
+				}
+			}
+
 		}
 	}
 
@@ -319,46 +472,54 @@ func (pool *TxPool) addTx(tx types.Txi, senderType TxType) error {
 
 // commit commits tx to tips pool. commit() checks if this tx is bad tx and moves
 // bad tx to badtx list other than tips list. If this tx proves any txs in the
-// tip pool, those tips will be removed from tips but stored in txpending.
+// tip pool, those tips will be removed from tips but stored in pending.
 func (pool *TxPool) commit(tx *types.Tx) error {
 	log.WithField("tx", tx).Debugf("start commit tx")
 
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-
-	//if pool.tips.Count() >= pool.conf.TipsSize {
-	//	log.Warnf("tips pool reaches max size: %d", pool.conf.TipsSize)
-	//	return fmt.Errorf("tips pool reaches max size")
-	//}
-	if pool.isBadTx(tx) {
+	// check tx's quality.
+	txquality := pool.isBadTx(tx)
+	if txquality == TxQualityIsFatal {
+		pool.remove(tx)
+		return fmt.Errorf("tx is surely incorrect to commit, hash: %s", tx.GetTxHash().String())
+	}
+	if txquality == TxQualityIsBad {
 		log.Debugf("bad tx: %s", tx.String())
 		pool.badtxs.Add(tx)
 		pool.txLookup.SwitchStatus(tx.GetTxHash(), TxStatusBadTx)
 		return nil
 	}
-	// move parents to txpending
+
+	// move parents to pending
 	for _, pHash := range tx.Parents() {
-		status := pool.GetStatus(pHash)
+		status := pool.getStatus(pHash)
 		if status != TxStatusTip {
-			log.WithField("parent", pHash).WithField("tx", tx).Info("parent is not a tip")
-			break
+			log.WithField("parent", pHash).WithField("tx", tx).
+				Debugf("parent is not a tip")
+			continue
 		}
 		parent := pool.tips.Get(pHash)
 		if parent == nil {
-			log.WithField("parent", pHash).WithField("tx", tx).Info("parent not in tips")
-			break
+			log.WithField("parent", pHash).WithField("tx", tx).
+				Warn("parent status is tip but can not find in tips")
+			continue
 		}
-		// remove sequencer from tips
+		// remove sequencer from pool
 		if parent.GetType() == types.TxBaseTypeSequencer {
 			pool.tips.Remove(pHash)
 			pool.txLookup.Remove(pHash)
 			continue
 		}
-		// move normal tx to pending
+		// move parent to pending
 		pool.tips.Remove(pHash)
-		pool.poolPending.Add(parent)
+		pool.pendings.Add(parent)
 		pool.txLookup.SwitchStatus(pHash, TxStatusPending)
 	}
+	// add tx to pool
+	if pool.flows.Get(tx.Sender()) == nil {
+		originBalance := pool.dag.GetBalance(tx.Sender())
+		pool.flows.ResetFlow(tx.Sender(), originBalance)
+	}
+	pool.flows.Add(tx)
 	pool.tips.Add(tx)
 	pool.txLookup.SwitchStatus(tx.GetTxHash(), TxStatusTip)
 
@@ -366,76 +527,156 @@ func (pool *TxPool) commit(tx *types.Tx) error {
 	return nil
 }
 
-func (pool *TxPool) isBadTx(tx *types.Tx) bool {
-	var (
-		okay = false
-		bad  = true
-	)
-
-	// check if the tx's parents are bad txs
+func (pool *TxPool) isBadTx(tx *types.Tx) TxQuality {
+	// check if the tx's parents exists and if is badtx
 	for _, parentHash := range tx.Parents() {
-		if pool.badtxs.Get(parentHash) != nil {
-			return bad
+		// check if tx in pool
+		if pool.get(parentHash) != nil {
+			if pool.getStatus(parentHash) == TxStatusBadTx {
+				log.WithField("tx", tx).Debugf("bad tx, parent %s is bad tx", parentHash.String())
+				return TxQualityIsBad
+			}
+			continue
+		}
+		// check if tx in dag
+		if pool.dag.GetTx(parentHash) == nil {
+			log.WithField("tx", tx).Debugf("fatal tx, parent %s is not exist", parentHash.String())
+			return TxQualityIsFatal
 		}
 	}
 
+	// check if the nonce is duplicate
+	txinpool := pool.flows.GetTxByNonce(tx.Sender(), tx.GetNonce())
+	if txinpool != nil {
+		if txinpool.GetTxHash() == tx.GetTxHash() {
+			log.WithField("tx", tx).Error("duplicated tx in pool. Why received many times")
+			return TxQualityIsFatal
+		}
+		log.WithField("tx", tx).WithField("existing", txinpool).Debug("bad tx, duplicate nonce found in pool")
+		return TxQualityIsBad
+	}
+	txindag := pool.dag.GetTxByNonce(tx.Sender(), tx.GetNonce())
+	if txindag != nil {
+		if txindag.GetTxHash() == tx.GetTxHash() {
+			log.WithField("tx", tx).Error("duplicated tx in dag. Why received many times")
+		}
+		log.WithField("tx", tx).WithField("existing", txindag).Debug("bad tx, duplicate nonce found in dag")
+		return TxQualityIsFatal
+	}
+
 	// check if the tx itself has no conflicts with local ledger
-	stateFrom, okFrom := pool.poolPending.state[tx.From]
-	if !okFrom {
-		stateFrom = NewPendingState(tx.From, pool.dag.GetBalance(tx.From))
+	stateFrom := pool.flows.GetBalanceState(tx.Sender())
+	if stateFrom == nil {
+		originBalance := pool.dag.GetBalance(tx.Sender())
+		stateFrom = NewBalanceState(originBalance)
+	}
+	// if tx's value is larger than its balance, return fatal.
+	if tx.Value.Value.Cmp(stateFrom.OriginBalance().Value) > 0 {
+		log.WithField("tx", tx).Debugf("fatal tx, tx's value larger than balance")
+		return TxQualityIsFatal
 	}
 	// if ( the value that 'from' already spent )
 	// 	+ ( the value that 'from' newly spent )
 	// 	> ( balance of 'from' in db )
-	newNeg := math.NewBigInt(0)
-	if newNeg.Value.Add(stateFrom.neg.Value, tx.Value.Value).Cmp(
+	totalspent := math.NewBigInt(0)
+	if totalspent.Value.Add(stateFrom.spent.Value, tx.Value.Value).Cmp(
 		stateFrom.originBalance.Value) > 0 {
-		return bad
+		log.WithField("tx", tx).Debugf("bad tx, total spent larget than balance")
+		return TxQualityIsBad
 	}
 
-	return okay
+	return TxQualityIsGood
 }
 
 // confirm pushes a batch of txs that confirmed by a sequencer to the dag.
 func (pool *TxPool) confirm(seq *types.Sequencer) error {
 	log.WithField("seq", seq).Debug("start confirm seq")
 
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-
+	// check if sequencer is correct
+	checkErr := pool.isBadSeq(seq)
+	if checkErr != nil {
+		return checkErr
+	}
 	// get sequencer's unconfirmed elders
-	elders := pool.seekElders(seq)
+	elders, errElders := pool.seekElders(seq)
+	if errElders != nil {
+		return errElders
+	}
 	// verify the elders
-	log.WithField("count", len(elders)).Warn("tx being confirmed by seq")
+	log.WithField("seq id", seq.Id).WithField("count", len(elders)).Info("tx being confirmed by seq")
 	batch, err := pool.verifyConfirmBatch(seq, elders)
 	if err != nil {
+		log.WithField("error", err).Errorf("verifyConfirmBatch error: %v", err)
 		return err
 	}
-	// move elders to dag
-	for _, elder := range elders {
-		status := pool.GetStatus(elder.GetTxHash())
-		if status == TxStatusBadTx {
-			pool.badtxs.Remove(elder.GetTxHash())
-		}
-		if status == TxStatusTip {
-			pool.tips.Remove(elder.GetTxHash())
-		}
-		if status == TxStatusPending {
-			pool.poolPending.Confirm(elder.GetTxHash())
-		}
-		pool.txLookup.Remove(elder.GetTxHash())
+	// push batch to dag
+	if err := pool.dag.Push(batch); err != nil {
+		log.WithField("error", err).Errorf("dag Push error: %v", err)
+		return err
 	}
-	pool.dag.Push(batch)
+	// remove elders from pool
+	for _, elder := range elders {
+		pool.remove(elder)
+	}
+	// solve conflicts of txs in pool
+	pool.solveConflicts()
+
+	if pool.flows.Get(seq.Sender()) == nil {
+		originBalance := pool.dag.GetBalance(seq.Sender())
+		pool.flows.ResetFlow(seq.Sender(), originBalance)
+	}
+	pool.flows.Add(seq)
 	pool.tips.Add(seq)
 	pool.txLookup.SwitchStatus(seq.GetTxHash(), TxStatusTip)
 
-	log.WithField("seq", seq).Debug("finished confirm seq")
+	log.WithField("seq id", seq.Id).WithField("seq", seq).Debug("finished confirm seq")
+	// notification
+	for _, c := range pool.OnBatchConfirmed {
+	loop:
+		for {
+			if !pool.timeoutConfirmation.Stop() {
+				<-pool.timeoutConfirmation.C
+			}
+			pool.timeoutConfirmation.Reset(time.Second * 10)
+			select {
+			case <-pool.timeoutConfirmation.C:
+				log.WithField("seq", seq).Warn("timeout on channel writing: batch confirmed")
+			case c <- elders:
+				break loop
+			}
+		}
+	}
+loop2:
+	for {
+		if !pool.timeoutLatestSequencer.Stop() {
+			<-pool.timeoutLatestSequencer.C
+		}
+		pool.timeoutLatestSequencer.Reset(time.Second * 10)
+		select {
+		case <-pool.timeoutLatestSequencer.C:
+			log.WithField("seq", seq).Warn("timeout on channel writing: on new latest sequencer")
+		case pool.OnNewLatestSequencer <- true:
+			break loop2
+		}
+	}
+
 	return nil
 }
 
-func (pool *TxPool) seekElders(baseTx types.Txi) map[types.Hash]types.Txi {
+// isBadSeq checks if a sequencer is correct.
+func (pool *TxPool) isBadSeq(seq *types.Sequencer) error {
+	// check if the nonce is duplicate
+	seqindag := pool.dag.GetTxByNonce(seq.Sender(), seq.GetNonce())
+	if seqindag != nil {
+		return fmt.Errorf("bad seq,duplicate nonce %d found in dag", seq.GetNonce())
+	}
+	return nil
+}
+
+// seekElders finds all the unconfirmed elders of baseTx.
+func (pool *TxPool) seekElders(baseTx types.Txi) (map[types.Hash]types.Txi, error) {
 	batch := make(map[types.Hash]types.Txi)
-	
+
 	inSeekingPool := map[types.Hash]int{}
 	seekingPool := list.New()
 	for _, parentHash := range baseTx.Parents() {
@@ -443,8 +684,12 @@ func (pool *TxPool) seekElders(baseTx types.Txi) map[types.Hash]types.Txi {
 	}
 	for seekingPool.Len() > 0 {
 		elderHash := seekingPool.Remove(seekingPool.Front()).(types.Hash)
-		elder := pool.Get(elderHash)
+		elder := pool.get(elderHash)
 		if elder == nil {
+			elder = pool.dag.GetTx(elderHash)
+			if elder == nil {
+				return nil, fmt.Errorf("can't find elder %s", elderHash.String())
+			}
 			continue
 		}
 		if batch[elder.GetTxHash()] == nil {
@@ -454,23 +699,24 @@ func (pool *TxPool) seekElders(baseTx types.Txi) map[types.Hash]types.Txi {
 			if _, in := inSeekingPool[elderParentHash]; !in {
 				seekingPool.PushBack(elderParentHash)
 				inSeekingPool[elderParentHash] = 0
-				log.WithField("len", seekingPool.Len()).
-					WithField("tx", baseTx).
-					WithField("as", len(inSeekingPool)).
-					WithField("elder", elder).
-					WithField("elderParentHash", elderParentHash).
-					Debug("seekingpool")
 			}
 		}
 	}
-	return batch
+	return batch, nil
 }
 
+// verifyConfirmBatch verifies if the elders are correct.
+// If passes all verifications, it returns a batch for pushing to dag.
 func (pool *TxPool) verifyConfirmBatch(seq *types.Sequencer, elders map[types.Hash]types.Txi) (*ConfirmBatch, error) {
 	// statistics of the confirmation term.
-	// sums up the related address's income and outcome values
+	// sums up the related address' income and outcome values
 	batch := map[types.Address]*BatchDetail{}
 	for _, txi := range elders {
+		// return error if a sequencer confirm a tx that has same nonce as itself.
+		if txi.Sender() == seq.Sender() && txi.GetNonce() == seq.GetNonce() {
+			return nil, fmt.Errorf("seq's nonce is the same as a tx it confirmed, nonce: %d, tx hash: %s",
+				seq.GetNonce(), txi.GetTxHash().String())
+		}
 		switch tx := txi.(type) {
 		case *types.Sequencer:
 			break
@@ -478,18 +724,18 @@ func (pool *TxPool) verifyConfirmBatch(seq *types.Sequencer, elders map[types.Ha
 			batchFrom, okFrom := batch[tx.From]
 			if !okFrom {
 				batchFrom = &BatchDetail{}
-				batchFrom.TxList = make(map[types.Hash]types.Txi)
+				batchFrom.TxList = NewTxList()
 				batchFrom.Neg = math.NewBigInt(0)
 				batchFrom.Pos = math.NewBigInt(0)
 				batch[tx.From] = batchFrom
 			}
-			batchFrom.TxList[tx.GetTxHash()] = tx
+			batchFrom.TxList.put(tx)
 			batchFrom.Neg.Value.Add(batchFrom.Neg.Value, tx.Value.Value)
 
 			batchTo, okTo := batch[tx.To]
 			if !okTo {
 				batchTo = &BatchDetail{}
-				batchTo.TxList = make(map[types.Hash]types.Txi)
+				batchTo.TxList = NewTxList()
 				batchTo.Neg = math.NewBigInt(0)
 				batchTo.Pos = math.NewBigInt(0)
 				batch[tx.To] = batchTo
@@ -497,96 +743,110 @@ func (pool *TxPool) verifyConfirmBatch(seq *types.Sequencer, elders map[types.Ha
 			batchTo.Pos.Value.Add(batchTo.Pos.Value, tx.Value.Value)
 		}
 	}
+	// verify balance and nonce
 	for addr, batchDetail := range batch {
+		// check balance
+		// if balance < outcome, then verify failed
 		confirmedBalance := pool.dag.GetBalance(addr)
-		// if balance of addr < outcome value of addr, then verify failed
 		if confirmedBalance.Value.Cmp(batchDetail.Neg.Value) < 0 {
 			return nil, fmt.Errorf("the balance of addr %s is not enough", addr.String())
+		}
+		// check nonce order
+		nonces := *batchDetail.TxList.keys
+		if !(nonces.Len() > 0) {
+			continue
+		}
+		if nErr := pool.verifyNonce(addr, &nonces, seq); nErr != nil {
+			return nil, nErr
+		}
+	}
+
+	// construct tx hashes
+	var txhashes types.Hashs
+	for _, hash := range pool.getHashOrder() {
+		elder, in := elders[hash]
+		if !in {
+			continue
+		}
+		if elder.GetType() == types.TxBaseTypeNormal {
+			txhashes = append(txhashes, hash)
 		}
 	}
 
 	cb := &ConfirmBatch{}
 	cb.Seq = seq
 	cb.Batch = batch
+	cb.TxHashes = &txhashes
 	return cb, nil
 }
 
-// reset clears the tips that haven't been proved for a long time
-func (pool *TxPool) reset() {
-	// TODO
-}
-
-type pending struct {
-	pool *TxPool
-
-	txs   *TxMap
-	state map[types.Address]*pendingState
-}
-
-func NewPending(pool *TxPool) *pending {
-	return &pending{
-		pool:  pool,
-		txs:   NewTxMap(),
-		state: make(map[types.Address]*pendingState),
+// solveConflicts reproduce all the txs in pool to make sure
+// all the txs are correct after seq confirmation.
+func (pool *TxPool) solveConflicts() {
+	txsInPool := []types.Txi{}
+	for _, hash := range pool.txLookup.getorder() {
+		tx := pool.get(hash)
+		if tx == nil {
+			continue
+		}
+		if tx.GetType() == types.TxBaseTypeSequencer {
+			continue
+		}
+		txsInPool = append(txsInPool, tx)
+	}
+	for _, tx := range txsInPool {
+		log.WithField("tx", tx).Debugf("start rejudge")
+		pool.remove(tx)
+		txEnv := &txEnvelope{
+			tx:     tx,
+			txType: TxTypeRejudge,
+			status: TxStatusQueue,
+		}
+		pool.txLookup.Add(txEnv)
+		pool.commit(tx.(*types.Tx))
 	}
 }
 
-func (p *pending) Get(hash types.Hash) types.Txi {
-	return p.txs.Get(hash)
-}
+func (pool *TxPool) verifyNonce(addr types.Address, noncesP *nonceHeap, seq *types.Sequencer) error {
+	sort.Sort(noncesP)
+	nonces := *noncesP
 
-// Add insert a normal tx into pool's pending and update the pending state.
-func (p *pending) Add(tx types.Txi) error {
-	switch tx := tx.(type) {
-	case *types.Tx:
-		// increase neg state of 'from'
-		stateFrom, okFrom := p.state[tx.From]
-		if !okFrom {
-			balance := p.pool.dag.GetBalance(tx.From)
-			stateFrom = NewPendingState(tx.From, balance)
-		}
-		stateFrom.neg.Value.Add(stateFrom.neg.Value, tx.Value.Value)
-		// increase pos state of 'to'
-		stateTo, okTo := p.state[tx.To]
-		if !okTo {
-			balance := p.pool.dag.GetBalance(tx.To)
-			stateTo = NewPendingState(tx.To, balance)
-		}
-		stateTo.pos.Value.Add(stateTo.pos.Value, tx.Value.Value)
-	case *types.Sequencer:
-		break
-	default:
-		return fmt.Errorf("unknown tx type")
+	has, hErr := pool.dag.HasLatestNonce(addr)
+	if hErr != nil {
+		return fmt.Errorf("check nonce in db err: %v", hErr)
 	}
-	p.txs.Add(tx)
+	if has {
+		latestNonce, nErr := pool.dag.GetLatestNonce(addr)
+		if nErr != nil {
+			return fmt.Errorf("get latest nonce err: %v", nErr)
+		}
+		if nonces[0] != latestNonce+1 {
+			return fmt.Errorf("nonce %d is not the next one of latest nonce %d", nonces[0], latestNonce)
+		}
+	} else {
+		if nonces[0] != uint64(0) {
+			return fmt.Errorf("nonce %d is not zero when there is no nonce in db", nonces[0])
+		}
+	}
+
+	for i := 1; i < nonces.Len(); i++ {
+		if nonces[i] != nonces[i-1]+1 {
+			return fmt.Errorf("nonce order mismatch, addr: %s, preNonce: %d, curNonce: %d", addr.String(), nonces[i-1], nonces[i])
+		}
+	}
+
+	if seq.Sender().Hex() == addr.Hex() {
+		if seq.GetNonce() != nonces[len(nonces)-1]+1 {
+			return fmt.Errorf("seq's nonce is not the next nonce of confirm list, seq nonce: %d, latest nonce in confirm list: %d", seq.GetNonce(), nonces[len(nonces)-1])
+		}
+	}
+
 	return nil
 }
 
-func (p *pending) Confirm(hash types.Hash) {
-	tx := p.txs.Get(hash)
-	switch tx := tx.(type) {
-	case *types.Sequencer:
-		break
-	case *types.Tx:
-		delete(p.state, tx.From)
-		delete(p.state, tx.To)
-	}
-	p.txs.Remove(hash)
-}
-
-// type pendingState map[types.Address]pendingAddrState
-type pendingState struct {
-	neg           *math.BigInt
-	pos           *math.BigInt
-	originBalance *math.BigInt
-}
-
-func NewPendingState(addr types.Address, balance *math.BigInt) *pendingState {
-	return &pendingState{
-		neg:           math.NewBigInt(0),
-		pos:           math.NewBigInt(0),
-		originBalance: balance,
-	}
+// reset clears the txs that conflicts with sequencer
+func (pool *TxPool) reset() {
+	// TODO
 }
 
 type TxMap struct {
@@ -600,18 +860,21 @@ func NewTxMap() *TxMap {
 	}
 	return tm
 }
+
 func (tm *TxMap) Count() int {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
 	return len(tm.txs)
 }
+
 func (tm *TxMap) Get(hash types.Hash) types.Txi {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
 	return tm.txs[hash]
 }
+
 func (tm *TxMap) GetAllKeys() []types.Hash {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -661,74 +924,147 @@ func (tm *TxMap) Add(tx types.Txi) {
 }
 
 type txLookUp struct {
-	txs map[types.Hash]*txEnvelope
-	mu  sync.RWMutex
+	order []types.Hash
+	txs   map[types.Hash]*txEnvelope
+	mu    sync.RWMutex
 }
 
 func newTxLookUp() *txLookUp {
 	return &txLookUp{
-		txs: make(map[types.Hash]*txEnvelope),
+		order: []types.Hash{},
+		txs:   make(map[types.Hash]*txEnvelope),
 	}
 }
+
+// Get tx from txLookUp by hash
 func (t *txLookUp) Get(h types.Hash) types.Txi {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	return t.get(h)
+}
+func (t *txLookUp) get(h types.Hash) types.Txi {
 	if txEnv := t.txs[h]; txEnv != nil {
 		return txEnv.tx
 	}
-	//log.WithField("hash", h).Debug("hash not found in txlookup")
-	// for k := range t.txs {
-	// 	log.Warnf("Available: %s", k.Hex())
-	// }
-
 	return nil
 }
+
+// Add tx into txLookUp
 func (t *txLookUp) Add(txEnv *txEnvelope) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	t.add(txEnv)
+}
+func (t *txLookUp) add(txEnv *txEnvelope) {
+	if _, ok := t.txs[txEnv.tx.GetTxHash()]; ok {
+		return
+	}
+
+	t.order = append(t.order, txEnv.tx.GetTxHash())
 	t.txs[txEnv.tx.GetTxHash()] = txEnv
 }
+
+// Remove tx from txLookUp
 func (t *txLookUp) Remove(h types.Hash) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	t.remove(h)
+}
+func (t *txLookUp) remove(h types.Hash) {
+	for i, hash := range t.order {
+		if hash.Cmp(h) == 0 {
+			t.order = append(t.order[:i], t.order[i+1:]...)
+		}
+	}
 	delete(t.txs, h)
 }
+
+// RemoveByIndex removes a tx by its order index
+func (t *txLookUp) RemoveByIndex(i int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.removeByIndex(i)
+}
+func (t *txLookUp) removeByIndex(i int) {
+	if (i < 0) || (i >= len(t.order)) {
+		return
+	}
+	hash := t.order[i]
+	t.order = append(t.order[:i], t.order[i+1:]...)
+	delete(t.txs, hash)
+}
+
+// Order returns hash list of txs in pool, ordered by the time
+// it added into pool.
+func (t *txLookUp) GetOrder() []types.Hash {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.getorder()
+}
+func (t *txLookUp) getorder() []types.Hash {
+	return t.order
+}
+
+// Count returns the total number of txs in txLookUp
 func (t *txLookUp) Count() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	return t.count()
+}
+
+func (t *txLookUp) count() int {
 	return len(t.txs)
 }
-func (t *txLookUp) Stats() (int, int) {
+
+// Stats returns the count of tips, bad txs, pending txs in txlookup
+func (t *txLookUp) Stats() (int, int, int) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	queue, tips := 0, 0
+	return t.stats()
+}
+func (t *txLookUp) stats() (int, int, int) {
+	tips, badtx, pending := 0, 0, 0
 	for _, v := range t.txs {
-		if v.status == TxStatusQueue {
-			queue += 1
-		} else if v.status == TxStatusTip {
+		if v.status == TxStatusTip {
 			tips += 1
+		} else if v.status == TxStatusBadTx {
+			badtx += 1
+		} else if v.status == TxStatusPending {
+			pending += 1
 		}
 	}
-	return queue, tips
+	return tips, badtx, pending
 }
+
+// Status returns the status of a tx
 func (t *txLookUp) Status(h types.Hash) TxStatus {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	return t.status(h)
+}
+func (t *txLookUp) status(h types.Hash) TxStatus {
 	if txEnv := t.txs[h]; txEnv != nil {
 		return txEnv.status
 	}
 	return TxStatusNotExist
 }
+
+// SwitchStatus switches the tx status
 func (t *txLookUp) SwitchStatus(h types.Hash, status TxStatus) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	t.switchstatus(h, status)
+}
+func (t *txLookUp) switchstatus(h types.Hash, status TxStatus) {
 	if txEnv := t.txs[h]; txEnv != nil {
 		txEnv.status = status
 	}

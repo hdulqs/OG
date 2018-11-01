@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-func (rpc *RpcControler) Newrouter() *gin.Engine {
-	router := gin.Default()
+func (rpc *RpcController) Newrouter() *gin.Engine {
+	router := gin.New()
 	router.GET("/", rpc.writeListOfEndpoints)
 	// init paths here
 	router.GET("/ping", func(c *gin.Context) {
@@ -23,6 +23,8 @@ func (rpc *RpcControler) Newrouter() *gin.Engine {
 	router.GET("peers_info", rpc.PeersInfo)
 	router.GET("og_peers_info", rpc.OgPeersInfo)
 	router.GET("transaction", rpc.Transaction)
+	router.GET("confirm", rpc.Confirm)
+	router.GET("transactions", rpc.Transactions)
 	router.GET("validators", rpc.Validator)
 	router.GET("sequencer", rpc.Sequencer)
 	router.GET("genesis", rpc.Genesis)
@@ -42,12 +44,13 @@ func (rpc *RpcControler) Newrouter() *gin.Engine {
 	router.GET("query_contract", rpc.QueryContract)
 
 	router.GET("debug", rpc.Debug)
+	router.GET("sync_status", rpc.SyncStatus)
 	return router
 
 }
 
 // writes a list of available rpc endpoints as an html page
-func (rpc *RpcControler) writeListOfEndpoints(c *gin.Context) {
+func (rpc *RpcController) writeListOfEndpoints(c *gin.Context) {
 
 	routerMap := map[string]string{
 		// info API
@@ -58,6 +61,7 @@ func (rpc *RpcControler) writeListOfEndpoints(c *gin.Context) {
 		"sequencer":     "",
 		"og_peers_info": "",
 		"genesis":       "",
+		"sync_status":   "",
 		// broadcast API
 		"new_transaction": "tx",
 
@@ -68,9 +72,10 @@ func (rpc *RpcControler) writeListOfEndpoints(c *gin.Context) {
 		"query_share":      "pubkey",
 		"contract_payload": "payload, abistr",
 
-		"query_receipt": "hash",
-		"transaction":   "hash",
-
+		"query_receipt":  "hash",
+		"transaction":    "hash",
+		"transactions":   "seq_id,address",
+		"confirm":        "hash",
 		"query_contract": "tx",
 	}
 	noArgNames := []string{}

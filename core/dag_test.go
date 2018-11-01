@@ -3,26 +3,27 @@ package core_test
 import (
 	"testing"
 
+	"fmt"
+	"github.com/annchain/OG/common/crypto"
+	"github.com/annchain/OG/common/math"
 	"github.com/annchain/OG/core"
 	"github.com/annchain/OG/og"
 	"github.com/annchain/OG/types"
-	"github.com/annchain/OG/common/crypto"
-	"github.com/annchain/OG/common/math"
 )
 
-func newTestDag(t *testing.T) (*core.Dag, *types.Sequencer, func()) {
+func newTestDag(t *testing.T, dbDirPrefix string) (*core.Dag, *types.Sequencer, func()) {
 	conf := core.DagConfig{}
-	db, remove := newTestLDB()
+	db, remove := newTestLDB(dbDirPrefix)
 	dag := core.NewDag(conf, db)
 
-	genesis, balance := og.DefaultGenesis()
+	genesis, balance := core.DefaultGenesis()
 	err := dag.Init(genesis, balance)
 	if err != nil {
 		t.Fatalf("init dag failed with error: %v", err)
 	}
 	dag.Start()
 
-	return dag, genesis, func(){
+	return dag, genesis, func() {
 		dag.Stop()
 		remove()
 	}
@@ -44,7 +45,7 @@ func newTestDagTx(nonce uint64) *types.Tx {
 func TestDagInit(t *testing.T) {
 	t.Parallel()
 
-	dag, genesis, finish := newTestDag(t)
+	dag, genesis, finish := newTestDag(t, "TestDagInit")
 	defer finish()
 
 	if dag.GetTx(genesis.GetTxHash()) == nil {
@@ -72,20 +73,20 @@ func TestDagLoadGenesis(t *testing.T) {
 	var err error
 
 	conf := core.DagConfig{}
-	db, remove := newTestLDB()
+	db, remove := newTestLDB("TestDagLoadGenesis")
 	defer remove()
 	dag := core.NewDag(conf, db)
 
 	acc := core.NewAccessor(db)
-	genesis, _ := og.DefaultGenesis()
+	genesis, _ := core.DefaultGenesis()
 	err = acc.WriteGenesis(genesis)
 	if err != nil {
 		t.Fatalf("can't write genesis into db: %v", err)
 	}
-	if ok := dag.LoadGenesis(); !ok {
-		t.Fatalf("can't load genesis from db")
+	if ok := dag.LoadLastState(); !ok {
+		t.Fatalf("can't load last state from db")
 	}
-	
+
 	ge := dag.Genesis()
 	if ge == nil {
 		t.Fatalf("genesis is not set in dag")
@@ -106,7 +107,7 @@ func TestDagLoadGenesis(t *testing.T) {
 func TestDagPush(t *testing.T) {
 	t.Parallel()
 
-	dag, genesis, finish := newTestDag(t)
+	dag, genesis, finish := newTestDag(t, "TestDagPush")
 	defer finish()
 
 	var err error
@@ -116,24 +117,27 @@ func TestDagPush(t *testing.T) {
 	tx2 := newTestDagTx(1)
 	tx2.ParentsHash = []types.Hash{genesis.GetTxHash()}
 
-	bd := &core.BatchDetail{TxList: make(map[types.Hash]types.Txi)}
-	bd.TxList[tx1.GetTxHash()] = tx1
-	bd.TxList[tx2.GetTxHash()] = tx2
+	bd := &core.BatchDetail{TxList: core.NewTxList()}
+	bd.TxList.Put(tx1)
+	bd.TxList.Put(tx2)
 	bd.Pos = math.NewBigInt(0)
 	bd.Neg = math.NewBigInt(0)
 
 	batch := map[types.Address]*core.BatchDetail{}
 	batch[tx1.From] = bd
 
-	seq := newTestSeq(0)
+	seq := newTestSeq(1)
 	seq.ParentsHash = []types.Hash{
 		tx1.GetTxHash(),
 		tx2.GetTxHash(),
 	}
 
+	hashes := &types.Hashs{tx1.GetTxHash(), tx2.GetTxHash()}
+
 	cb := &core.ConfirmBatch{}
 	cb.Seq = seq
 	cb.Batch = batch
+	cb.TxHashes = hashes
 
 	err = dag.Push(cb)
 	if err != nil {
@@ -163,14 +167,14 @@ func TestDagPush(t *testing.T) {
 	if len(hashs) != 2 {
 		t.Fatalf("hashs length not match")
 	}
-	if !( (hashs[0] == tx1.GetTxHash() && hashs[1] == tx2.GetTxHash()) || 
-			(hashs[1] == tx1.GetTxHash() && hashs[0] == tx2.GetTxHash()) ) {
+	if !((hashs[0] == tx1.GetTxHash() && hashs[1] == tx2.GetTxHash()) ||
+		(hashs[1] == tx1.GetTxHash() && hashs[0] == tx2.GetTxHash())) {
 		t.Fatalf("indexed hashs are not the list of tx1 and tx2's hash")
 	}
 
+	txs := dag.GetTxsByNumber(seq.Id)
+	fmt.Println("txs", types.Txs(txs))
 
 	// TODO check addr balance
 
 }
-
-

@@ -1,14 +1,14 @@
 package main
 
 import (
-	"net/url"
-	"github.com/sirupsen/logrus"
-	"fmt"
-	"github.com/gorilla/websocket"
 	"encoding/json"
+	"fmt"
 	"github.com/annchain/OG/wserver"
-	"time"
+	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 	"net/http"
+	"net/url"
+	"time"
 )
 
 type pm struct {
@@ -49,6 +49,7 @@ func main() {
 	deleted := 0
 
 	ticker := time.NewTicker(time.Second * REPORT_INTERVAL_SECONDS)
+	defer ticker.Stop()
 
 	http.DefaultTransport.(*http.Transport).ResponseHeaderTimeout = time.Second * 5
 
@@ -97,23 +98,24 @@ func main() {
 				logrus.WithField("port", m.port).WithError(err).Error("unmarshal")
 				return
 			}
-			key := uidata.Nodes[0].Data.Unit
-			//logrus.WithFields(logrus.Fields{
-			//	"port": m.port,
-			//	"len":  len(uidata.Nodes),
-			//	"tx":   key,
-			//}).Debug("new tx")
+			for _, node := range uidata.Nodes {
+				key := node.Data.Unit
+				//logrus.WithFields(logrus.Fields{
+				//	"port": m.port,
+				//	"len":  len(uidata.Nodes),
+				//	"tx":   key,
+				//}).Debug("new tx")
 
-			if _, ok := mapcount[key]; !ok {
-				mapcount[key] = make(map[int]struct{})
+				if _, ok := mapcount[key]; !ok {
+					mapcount[key] = make(map[int]struct{})
+				}
+				mapcount[key][m.port] = struct{}{}
+				if len(mapcount[key]) == count {
+					logrus.WithField("key", key).Debug("fully announced")
+					delete(mapcount, key)
+					deleted += 1
+				}
 			}
-			mapcount[key][m.port] = struct{}{}
-			if len(mapcount[key]) == count {
-				logrus.WithField("key", key).Debug("fully announced")
-				delete(mapcount, key)
-				deleted += 1
-			}
-
 		}
 	}
 }

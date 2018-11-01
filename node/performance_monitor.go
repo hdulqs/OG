@@ -2,12 +2,13 @@ package node
 
 import (
 	"github.com/sirupsen/logrus"
+	"runtime"
 	"time"
 )
 
 type PerformanceReporter interface {
 	Name() string
-	GetBenchmarks() map[string]int
+	GetBenchmarks() map[string]interface{}
 }
 
 type PerformanceMonitor struct {
@@ -22,13 +23,20 @@ func (p *PerformanceMonitor) Register(holder PerformanceReporter) {
 func (p *PerformanceMonitor) Start() {
 	go func() {
 		p.quit = false
+		//runtime.SetBlockProfileRate(1)
+
 		for !p.quit {
 			fields := logrus.Fields{}
 			for _, ch := range p.reporters {
 				fields[ch.Name()] = ch.GetBenchmarks()
 			}
-			logrus.WithFields(fields).Warn("Performance")
-			time.Sleep(time.Second * 5)
+			// add additional fields
+			fields["goroutines"] = runtime.NumGoroutine()
+
+			logrus.WithFields(fields).Info("Performance")
+			//pprof.Lookup("block").WriteTo(os.Stdout, 1)
+
+			time.Sleep(time.Second * 15)
 		}
 	}()
 }

@@ -3,6 +3,7 @@ package types
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"github.com/annchain/OG/common/math"
 	"math/rand"
 )
@@ -19,6 +20,10 @@ type Tx struct {
 	Value *math.BigInt
 }
 
+func (t *Tx) String() string {
+	return fmt.Sprintf("%s-[%.10s]-%d-Tx", t.TxBase.String(), t.Sender().String(), t.AccountNonce)
+}
+
 func SampleTx() *Tx {
 	v, _ := math.NewBigIntFromString("-1234567890123456789012345678901234567890123456789012345678901234567890", 10)
 
@@ -28,8 +33,8 @@ func SampleTx() *Tx {
 		Type:         TxBaseTypeNormal,
 		AccountNonce: 234,
 	},
-		From: HexToAddress("0x99"),
-		To: HexToAddress("0x88"),
+		From:  HexToAddress("0x99"),
+		To:    HexToAddress("0x88"),
 		Value: v,
 	}
 }
@@ -51,8 +56,8 @@ func RandomTx() *Tx {
 		Type:         TxBaseTypeNormal,
 		AccountNonce: uint64(rand.Int63n(50000)),
 	},
-		From: randomAddress(),
-		To: randomAddress(),
+		From:  randomAddress(),
+		To:    randomAddress(),
 		Value: math.NewBigInt(rand.Int63()),
 	}
 }
@@ -66,6 +71,14 @@ func (t *Tx) SignatureTargets() []byte {
 	panicIfError(binary.Write(&buf, binary.BigEndian, t.Value.GetBytes()))
 
 	return buf.Bytes()
+}
+
+func (t *Tx) Sender() Address {
+	return t.From
+}
+
+func (t *Tx) GetValue() *math.BigInt {
+	return t.Value
 }
 
 func (t *Tx) Parents() []Hash {

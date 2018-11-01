@@ -28,7 +28,6 @@ import (
 	"github.com/annchain/OG/common/mclock"
 	"github.com/annchain/OG/p2p/netutil"
 	"github.com/annchain/OG/types"
-	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -495,7 +494,7 @@ loop:
 
 		case <-topicRegisterLookupTick.C:
 			log.Debug("<-topicRegisterLookupTick")
-			if (topicRegisterLookupTarget.target == types.Hash{}) {
+			if topicRegisterLookupTarget.target.Empty() {
 				target, delay := net.ticketStore.nextRegisterLookup()
 				topicRegisterLookupTarget = target
 				topicRegisterLookupTick.Reset(delay)
