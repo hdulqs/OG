@@ -1,8 +1,8 @@
 package og
 
 import (
+	"fmt"
 	"github.com/annchain/OG/types"
-	"math/rand"
 	"github.com/sirupsen/logrus"
 )
 
@@ -21,31 +21,9 @@ type DummyTxPoolMiniTx struct {
 	tipsMap map[types.Hash]types.Txi
 }
 
-func (d *DummyTxPoolMiniTx) Init(){
+func (d *DummyTxPoolMiniTx) Init() {
 	d.poolMap = make(map[types.Hash]types.Txi)
 	d.tipsMap = make(map[types.Hash]types.Txi)
-}
-
-// generate [count] unique random number within range [0, upper)
-// if count > upper, use all available indices
-func generateRandomIndices(count int, upper int) []int {
-	if count > upper {
-		count = upper
-	}
-	// avoid dup
-	generated := make(map[int]struct{})
-	for count > len(generated) {
-		i := rand.Intn(upper)
-		if _, ok := generated[i]; ok {
-			continue
-		}
-		generated[i] = struct{}{}
-	}
-	arr := make([]int, 0, len(generated))
-	for k := range generated {
-		arr = append(arr, k)
-	}
-	return arr
 }
 
 func (p *DummyTxPoolMiniTx) GetRandomTips(n int) (v []types.Txi) {
@@ -72,4 +50,29 @@ func (p *DummyTxPoolMiniTx) Add(v types.Txi) {
 	}
 	logrus.Infof("added tx %s to tip. current pool size: tips: %d pool: %d",
 		v.String(), len(p.tipsMap), len(p.poolMap))
+}
+
+type dummyTxPoolParents struct {
+	poolMap map[types.Hash]types.Txi
+}
+
+func (p *dummyTxPoolParents) GetLatestNonce(addr types.Address) (uint64, error) {
+	return 0, fmt.Errorf("not supported")
+}
+
+func (p *dummyTxPoolParents) RegisterOnNewTxReceived(c chan types.Txi) {
+	return
+}
+
+func (p *dummyTxPoolParents) Init() {
+	p.poolMap = make(map[types.Hash]types.Txi)
+}
+
+func (p *dummyTxPoolParents) Get(hash types.Hash) types.Txi {
+	return p.poolMap[hash]
+}
+
+func (p *dummyTxPoolParents) AddRemoteTx(tx types.Txi) error {
+	p.poolMap[tx.GetTxHash()] = tx
+	return nil
 }

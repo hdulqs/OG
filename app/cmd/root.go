@@ -15,19 +15,25 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
+	"github.com/rifflock/lfshook"
+	"io/ioutil"
 	"os"
+	"runtime/debug"
+	"time"
 
 	"github.com/annchain/OG/common/filename"
+	"github.com/annchain/OG/mylog"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"io"
-	"path"
-	"path/filepath"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"path"
+	"path/filepath"
 )
 
 var cfgFile string
@@ -42,14 +48,26 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	defer func() {
-		if r := recover(); r != nil {
-			logrus.WithField("obj", r).Fatalf("Fatal error occurred. Program will exit")
-		}
-	}()
+	defer DumpStack()
 	if err := rootCmd.Execute(); err != nil {
 		logrus.WithError(err).Fatalf("Fatal error occurred. Program will exit")
 		os.Exit(1)
+	}
+}
+
+func DumpStack() {
+	if err := recover(); err != nil {
+		logrus.WithField("obj", err).Error("Fatal error occurred. Program will exit")
+		var buf bytes.Buffer
+		stack := debug.Stack()
+		buf.WriteString(fmt.Sprintf("Panic: %s\n", err))
+		buf.Write(stack)
+		dumpName := "dump_" + time.Now().Format("20060102-150405")
+		nerr := ioutil.WriteFile(dumpName, buf.Bytes(), 0644)
+		if nerr != nil {
+			fmt.Println("write dump file error", nerr)
+			fmt.Println(buf.Bytes())
+		}
 	}
 }
 
@@ -64,11 +82,13 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("log_stdout", "s", false, "Whether the log will be printed to stdout")
 	rootCmd.PersistentFlags().StringP("log_level", "v", "debug", "Logging verbosity, possible values:[panic, fatal, error, warn, info, debug]")
 	rootCmd.PersistentFlags().BoolP("log_line_number", "n", false, "log_line_number")
+	rootCmd.PersistentFlags().BoolP("multifile_by_level", "m", false, "multifile_by_level")
 
 	viper.BindPFlag("datadir", rootCmd.PersistentFlags().Lookup("datadir"))
 	viper.BindPFlag("config", rootCmd.PersistentFlags().Lookup("config"))
 	viper.BindPFlag("log_dir", rootCmd.PersistentFlags().Lookup("log_dir"))
 	viper.BindPFlag("log_line_number", rootCmd.PersistentFlags().Lookup("log_line_number"))
+	viper.BindPFlag("multifile_by_level", rootCmd.PersistentFlags().Lookup("multifile_by_level"))
 	//viper.BindPFlag("log_stdout", rootCmd.PersistentFlags().Lookup("log_stdout"))
 	viper.BindPFlag("log.level", rootCmd.PersistentFlags().Lookup("log_level"))
 
@@ -82,6 +102,7 @@ func init() {
 	viper.SetDefault("max_mined_hash", "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
 
 	viper.SetDefault("debug.node_id", 0)
+	viper.SetDefault("consensus", "dpos")
 }
 
 func panicIfError(err error, message string) {
@@ -163,8 +184,31 @@ func initLogger() {
 		filenameHook.Field = "line"
 		logrus.AddHook(filenameHook)
 	}
+	multifile := viper.GetBool("multifile_by_level")
 
+	if multifile && logdir != "" {
+		panicLog, _ := filepath.Abs(path.Join(logdir, "panic.log"))
+		fatalLog, _ := filepath.Abs(path.Join(logdir, "fatal.log"))
+		warnLog, _ := filepath.Abs(path.Join(logdir, "warn.log"))
+		errorLog, _ := filepath.Abs(path.Join(logdir, "error.log"))
+		infoLog, _ := filepath.Abs(path.Join(logdir, "info.log"))
+		debugLog, _ := filepath.Abs(path.Join(logdir, "debug.log"))
+		pathMap := lfshook.PathMap{
+			logrus.PanicLevel: panicLog,
+			logrus.FatalLevel: fatalLog,
+			logrus.WarnLevel:  warnLog,
+			logrus.ErrorLevel: errorLog,
+			logrus.InfoLevel:  infoLog,
+			logrus.DebugLevel: debugLog,
+		}
+		logrus.AddHook(lfshook.NewHook(
+			pathMap,
+			Formatter,
+		))
+	}
 	logrus.Debug("Logger initialized.")
+	mylog.InitLoggers(logrus.StandardLogger())
+
 }
 
 func startPerformanceMonitor() {

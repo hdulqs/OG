@@ -1,31 +1,32 @@
 package core_test
 
 import (
+	"io/ioutil"
+	"math/rand"
 	"os"
 	"testing"
-	"io/ioutil"
 
 	"github.com/annchain/OG/common/crypto"
 	"github.com/annchain/OG/common/math"
-	"github.com/annchain/OG/types"
+	"github.com/annchain/OG/core"
 	"github.com/annchain/OG/og"
 	"github.com/annchain/OG/ogdb"
-	"github.com/annchain/OG/core"
+	"github.com/annchain/OG/types"
 )
 
 var (
-	testPk0 = "0000000000000000000000000000000000000000000000000000000000000000"
+	testPk0   = "0000000000000000000000000000000000000000000000000000000000000000"
 	testAddr0 = "188A3EB3BFD8DA1274C935946CB5765B4225503E"
 
-	testPk1 = "1111111111111111111111111111111111111111111111111111111111111111"
+	testPk1   = "1111111111111111111111111111111111111111111111111111111111111111"
 	testAddr1 = "E97BB1E3813CA30F8CFC6A0E8B50047063E893B7"
 
-	testPk2 = "2222222222222222222222222222222222222222222222222222222222222222"
+	testPk2   = "2222222222222222222222222222222222222222222222222222222222222222"
 	testAddr2 = "2EC79FEA2B6F64FAD50CD20CF5CC2281E141441E"
 )
 
-func newTestLDB() (*ogdb.LevelDB, func()) {
-	dirname, err := ioutil.TempDir(os.TempDir(), "ogdb_test_")
+func newTestLDB(dirPrefix string) (*ogdb.LevelDB, func()) {
+	dirname, err := ioutil.TempDir(os.TempDir(), "ogdb_test_"+dirPrefix+"_")
 	if err != nil {
 		panic("failed to create test file: " + err.Error())
 	}
@@ -57,9 +58,10 @@ func newTestSeq(nonce uint64) *types.Sequencer {
 	txCreator := &og.TxCreator{
 		Signer: &crypto.SignerSecp256k1{},
 	}
-	pk, _ := crypto.PrivateKeyFromString(testPk0)
+	pk, _ := crypto.PrivateKeyFromString(testPk1)
+	addr := types.HexToAddress(testAddr1)
 
-	seq := txCreator.NewSignedSequencer(0, []types.Hash{}, nonce, pk)
+	seq := txCreator.NewSignedSequencer(addr, nonce, []types.Hash{}, nonce, pk)
 	seq.SetHash(seq.CalcTxHash())
 
 	return seq.(*types.Sequencer)
@@ -72,7 +74,7 @@ func compareTxi(tx1, tx2 types.Txi) bool {
 func TestTransactionStorage(t *testing.T) {
 	t.Parallel()
 
-	db, remove := newTestLDB()
+	db, remove := newTestLDB("TestTransactionStorage")
 	defer remove()
 
 	var err error
@@ -102,7 +104,7 @@ func TestTransactionStorage(t *testing.T) {
 	}
 
 	// test sequencer read write
-	seq := newTestSeq(0)
+	seq := newTestSeq(1)
 	err = acc.WriteTransaction(seq)
 	if err != nil {
 		t.Fatalf("write seq %s failed: %v", seq.GetTxHash().String(), err)
@@ -119,7 +121,7 @@ func TestTransactionStorage(t *testing.T) {
 func TestGenesisStorage(t *testing.T) {
 	t.Parallel()
 
-	db, remove := newTestLDB()
+	db, remove := newTestLDB("TestGenesisStorage")
 	defer remove()
 
 	var err error
@@ -142,7 +144,7 @@ func TestGenesisStorage(t *testing.T) {
 func TestLatestSeqStorage(t *testing.T) {
 	t.Parallel()
 
-	db, remove := newTestLDB()
+	db, remove := newTestLDB("TestLatestSeqStorage")
 	defer remove()
 
 	var err error
@@ -162,22 +164,122 @@ func TestLatestSeqStorage(t *testing.T) {
 	}
 }
 
-// func TestBalanceStorage(t *testing.T) {
-// 	t.Parallel()
+func TestBalanceStorage(t *testing.T) {
+	t.Parallel()
 
-// 	db, remove := newTestLDB()
-// 	defer remove()
+	db, remove := newTestLDB("TestBalanceStorage")
+	defer remove()
 
-// 	var err error 
-// 	acc := core.NewAccessor(db)
+	var err error
+	acc := core.NewAccessor(db)
+	addr := types.HexToAddress(testAddr0)
 
-// 	addr
+	balance := acc.ReadBalance(addr)
+	if balance == nil {
+		t.Fatalf("read balance failed")
+	}
+	if balance.Value.Cmp(math.NewBigInt(0).Value) != 0 {
+		t.Fatalf("the balance of addr %s is not 0", addr.String())
+	}
 
+	newBalance := math.NewBigInt(int64(rand.Intn(10000) + 10000))
+	err = acc.SetBalance(addr, newBalance)
+	if err != nil {
+		t.Fatalf("set new balance failed: %v", err)
+	}
+	bFromDb := acc.ReadBalance(addr)
+	if bFromDb == nil {
+		t.Fatalf("read balance after seting failed")
+	}
+	if bFromDb.Value.Cmp(newBalance.Value) != 0 {
+		t.Fatalf("the balance in db is not equal the balance we set")
+	}
 
-// }
+	addAmount := math.NewBigInt(int64(rand.Intn(10000)))
+	err = acc.AddBalance(addr, addAmount)
+	if err != nil {
+		t.Fatalf("add balance failed")
+	}
+	bFromDb = acc.ReadBalance(addr)
+	if bFromDb == nil {
+		t.Fatalf("read balance after adding failed")
+	}
+	if newBalance.Value.Add(newBalance.Value, addAmount.Value).Cmp(bFromDb.Value) != 0 {
+		t.Fatalf("the balance after add is not as expected")
+	}
 
-// TODO test balance
+	subAmount := math.NewBigInt(int64(rand.Intn(10000)))
+	err = acc.SubBalance(addr, subAmount)
+	if err != nil {
+		t.Fatalf("sub balance failed")
+	}
+	bFromDb = acc.ReadBalance(addr)
+	if bFromDb == nil {
+		t.Fatalf("read balance after sub failed")
+	}
+	if newBalance.Value.Sub(newBalance.Value, subAmount.Value).Cmp(bFromDb.Value) != 0 {
+		t.Fatalf("the balance after sub is not as expected")
+	}
+}
 
+func TestLatestNonce(t *testing.T) {
+	t.Parallel()
 
+	db, remove := newTestLDB("TestLatestNonce")
+	defer remove()
 
+	var err error
+	acc := core.NewAccessor(db)
 
+	var nonce uint64
+
+	tx0 := newTestUnsealTx(0)
+	err = acc.WriteTransaction(tx0)
+	if err != nil {
+		t.Fatalf("write tx0 %s failed: %v", tx0.GetTxHash().String(), err)
+	}
+	_, err = acc.ReadAddrLatestNonce(tx0.Sender())
+	if (err != nil) && (err.Error() != "not exists") {
+		t.Fatalf("first tx0 nonce is not empty")
+	}
+
+	tx1 := newTestUnsealTx(1)
+	err = acc.WriteTransaction(tx1)
+	if err != nil {
+		t.Fatalf("write tx1 %s failed: %v", tx1.GetTxHash().String(), err)
+	}
+	nonce, err = acc.ReadAddrLatestNonce(tx1.Sender())
+	if err != nil {
+		t.Fatalf("read tx1 nonce failed: %v", err)
+	}
+	if nonce != uint64(1) {
+		t.Fatalf("the nonce in db is not we expected. hope %d but get %d", 1, nonce)
+	}
+
+	tx2 := newTestUnsealTx(2)
+	err = acc.WriteTransaction(tx2)
+	if err != nil {
+		t.Fatalf("write tx2 %s failed: %v", tx2.GetTxHash().String(), err)
+	}
+	nonce, err = acc.ReadAddrLatestNonce(tx2.Sender())
+	if err != nil {
+		t.Fatalf("read tx2 nonce failed: %v", err)
+	}
+	if nonce != uint64(2) {
+		t.Fatalf("the nonce in db is not we expected. hope %d but get %d", 2, nonce)
+	}
+
+	badtx := newTestUnsealTx(1)
+	err = acc.WriteTransaction(badtx)
+	if err != nil {
+		t.Fatalf("write badtx %s failed: %v", badtx.GetTxHash().String(), err)
+	}
+	nonce, err = acc.ReadAddrLatestNonce(badtx.Sender())
+	if err != nil {
+		t.Fatalf("read badtx nonce failed: %v", err)
+	}
+	if nonce != uint64(2) {
+		t.Fatalf("the nonce in db is not we expected. hope %d but get %d", 1, nonce)
+	}
+
+}

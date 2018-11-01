@@ -1,13 +1,13 @@
-package og_test
+package core
 
 import (
-	"testing"
-	"github.com/sirupsen/logrus"
 	"github.com/annchain/OG/types"
+	"github.com/sirupsen/logrus"
+	"testing"
 )
 
-// TODO
 func TestName(t *testing.T) {
 	a := types.HexToHash("0x00")
 	logrus.Info(a)
+	DefaultGenesis()
 }
