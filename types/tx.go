@@ -10,6 +10,7 @@ import (
 
 	"github.com/annchain/OG/common/hexutil"
 	"github.com/annchain/OG/common/math"
+	"github.com/sirupsen/logrus"
 )
 
 //go:generate msgp
@@ -86,10 +87,15 @@ func (t *Tx) SignatureTargets() []byte {
 	var buf bytes.Buffer
 
 	panicIfError(binary.Write(&buf, binary.BigEndian, t.AccountNonce))
+	logrus.WithField("tx sign targets", t.GetTxHash().Hex()).Tracef("nonce, %x", buf.Bytes())
 	panicIfError(binary.Write(&buf, binary.BigEndian, t.From.Bytes))
+	logrus.WithField("tx sign targets", t.GetTxHash().Hex()).Tracef("from, %x", buf.Bytes())
 	panicIfError(binary.Write(&buf, binary.BigEndian, t.To.Bytes))
+	logrus.WithField("tx sign targets", t.GetTxHash().Hex()).Tracef("to, %x", buf.Bytes())
 	panicIfError(binary.Write(&buf, binary.BigEndian, t.Value.GetSigBytes()))
+	logrus.WithField("tx sign targets", t.GetTxHash().Hex()).Tracef("value, %x", buf.Bytes())
 	panicIfError(binary.Write(&buf, binary.BigEndian, t.Data))
+	logrus.WithField("tx sign targets", t.GetTxHash().Hex()).Tracef("data, %x", buf.Bytes())
 
 	return buf.Bytes()
 }

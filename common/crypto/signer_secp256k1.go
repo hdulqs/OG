@@ -20,6 +20,9 @@ func (s *SignerSecp256k1) GetCryptoType() CryptoType {
 
 func (s *SignerSecp256k1) Sign(privKey PrivateKey, msg []byte) Signature {
 	priv, _ := HexToECDSA(fmt.Sprintf("%x", privKey.Bytes))
+	if priv == nil {
+		return Signature{}
+	}
 	hash := Sha256(msg)
 	if len(hash) != 32 {
 		log.Errorf("hash is required to be exactly 32 bytes (%d)", len(hash))

@@ -10,7 +10,6 @@ import (
 
 	"github.com/annchain/OG/common"
 
-	"github.com/annchain/OG/common/hexutil"
 	"github.com/annchain/OG/common/math"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -394,8 +393,8 @@ func (r *RpcController) NewTransaction(c *gin.Context) {
 		return
 	}
 
-	signature, err := hexutil.Decode(txReq.Signature)
-	if err != nil {
+	signature := common.FromHex(txReq.Signature)
+	if signature == nil {
 		Response(c, http.StatusBadRequest, fmt.Errorf("signature format error"), nil)
 		return
 	}
@@ -411,6 +410,16 @@ func (r *RpcController) NewTransaction(c *gin.Context) {
 		Response(c, http.StatusOK, fmt.Errorf("crypto algorithm mismatch"), nil)
 		return
 	}
+
+	logrus.WithFields(map[string]interface{}{
+		"from":  from.Hex(),
+		"to":    to.Hex(),
+		"value": value.GetInt64(),
+		"data":  fmt.Sprintf("%x", data),
+		"nonce": nonce,
+		"pub":   pub.String(),
+		"sig":   fmt.Sprintf("%x", sig.Bytes),
+	}).Tracef("get new tx req")
 	tx, err = r.TxCreator.NewTxWithSeal(from, to, value, data, nonce, pub, sig)
 	if err != nil {
 		Response(c, http.StatusInternalServerError, fmt.Errorf("new tx failed"), nil)

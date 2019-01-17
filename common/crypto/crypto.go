@@ -1,9 +1,12 @@
 package crypto
 
 import (
+	"encoding/binary"
+	"fmt"
+
+	"github.com/annchain/OG/common"
 	"github.com/annchain/OG/common/hexutil"
 	"github.com/annchain/OG/types"
-	"encoding/binary"
 )
 
 type CryptoType int8
@@ -39,8 +42,9 @@ func SignatureFromBytes(typev CryptoType, bytes []byte) Signature {
 }
 
 func PrivateKeyFromString(value string) (priv PrivateKey, err error) {
-	bytes, err := hexutil.Decode(value)
-	if err != nil {
+	bytes := common.FromHex(value)
+	if bytes == nil {
+		err = fmt.Errorf("decode from hex error")
 		return
 	}
 	priv = PrivateKey{
