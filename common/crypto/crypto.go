@@ -55,8 +55,9 @@ func PrivateKeyFromString(value string) (priv PrivateKey, err error) {
 }
 
 func PublicKeyFromString(value string) (pub PublicKey, err error) {
-	bytes, err := hexutil.Decode(value)
-	if err != nil {
+	bytes := common.FromHex(value)
+	if bytes == nil {
+		err = fmt.Errorf("decode from hex error")
 		return
 	}
 	pub = PublicKey{

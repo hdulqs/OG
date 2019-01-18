@@ -21,6 +21,7 @@ func (s *SignerSecp256k1) GetCryptoType() CryptoType {
 func (s *SignerSecp256k1) Sign(privKey PrivateKey, msg []byte) Signature {
 	priv, _ := HexToECDSA(fmt.Sprintf("%x", privKey.Bytes))
 	if priv == nil {
+		// fmt.Println("hex to ecdsa error: ", err)
 		return Signature{}
 	}
 	hash := Sha256(msg)
@@ -47,7 +48,18 @@ func (s *SignerSecp256k1) AddressFromPubKeyBytes(pubKey []byte) types.Address {
 }
 
 func (s *SignerSecp256k1) Verify(pubKey PublicKey, signature Signature, msg []byte) bool {
-	sig := (signature.Bytes)[:len(signature.Bytes)-1]
+	// Check the signature length, to avoid the effect from recovery id.
+	// If the signature contains recovery id, remove it. Make sure the
+	// length of the signature is 64 bytes.
+	var sig []byte
+	l := len(signature.Bytes)
+	if l == 64 {
+		sig = (signature.Bytes)[:l]
+	} else if l == 65 {
+		sig = (signature.Bytes)[:l-1]
+	} else {
+		return false
+	}
 	return secp256k1.VerifySignature(pubKey.Bytes, Sha256(msg), sig)
 }
 

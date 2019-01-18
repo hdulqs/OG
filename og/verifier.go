@@ -58,6 +58,8 @@ func (v *TxFormatVerifier) VerifyHash(t types.Txi) bool {
 
 func (v *TxFormatVerifier) VerifySignature(t types.Txi) bool {
 	base := t.GetBase()
+
+	logrus.WithField("tx hash", t.GetTxHash().Hex()).Tracef("signature verify, pub: %x, sig: %x, msg: %x", base.PublicKey, base.Signature, t.SignatureTargets())
 	return v.Signer.Verify(
 		crypto.PublicKey{Type: v.CryptoType, Bytes: base.PublicKey},
 		crypto.Signature{Type: v.CryptoType, Bytes: base.Signature},
