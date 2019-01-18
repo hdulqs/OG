@@ -130,6 +130,47 @@ func (r *RpcController) Transaction(c *gin.Context) {
 	Response(c, http.StatusNotFound, fmt.Errorf("status not found"), nil)
 }
 
+const (
+	TxStatusNotExist int = iota
+	TxStatusPending
+	TxStatusConfirmed
+)
+
+// TransactionStatus returns the status of a transaction. It reponse whether
+// a tx is in pool or in dag or not exists.
+func (r *RpcController) TransactionStatus(c *gin.Context) {
+	hashstr := c.Query("hash")
+	hash, err := types.HexStringToHash(hashstr)
+	cors(c)
+	if err != nil {
+		Response(c, http.StatusBadRequest, fmt.Errorf("hash format error"), nil)
+		return
+	}
+
+	resp := map[string]interface{}{}
+
+	txi := r.Og.Dag.GetTx(hash)
+	if txi != nil {
+		resp["status"] = TxStatusConfirmed
+		resp["msg"] = "confirmed by seq"
+		Response(c, http.StatusOK, nil, resp)
+		return
+	}
+
+	txi = r.Og.TxPool.Get(hash)
+	if txi != nil {
+		resp["status"] = TxStatusPending
+		resp["msg"] = "stored in tx pool"
+		Response(c, http.StatusOK, nil, resp)
+		return
+	}
+
+	resp["status"] = TxStatusNotExist
+	resp["msg"] = "not exists"
+	Response(c, http.StatusOK, nil, resp)
+	return
+}
+
 //Confirm checks if tx has already been confirmed.
 func (r *RpcController) Confirm(c *gin.Context) {
 	hashtr := c.Query("hash")

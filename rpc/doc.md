@@ -151,6 +151,46 @@ Get transaction from og node.
 ```
 ---
 
+## **Check Transaction Status**
+Get the status of the transaction. Check if the tx is in TxPool or Dag or not exists.
+
+**URL**: 
+```
+/transaction_status
+```
+
+**Method**: GET
+
+**请求参数**:  
+
+| 参数 | 数据类型 | 是否必填 | 备注
+| --- | --- | --- | ---
+| hash | string | 是 | 必须是可以转成byte数组的 hex string
+
+**请求示例**：
+> /transaction_status?hash=69a1379feffe1049e0b45d5dcb131034f79e94cd2ce5085cececb9c4ccdc2be0
+
+**返回参数**：  
+返回的 data 字段是一个 json 结构的 map，其 code 字段标识了当前 tx 的状态。债台对照如下表：
+
+| code | 释义
+| --- | ---
+| 0 | Not Exists，交易不在 TxPool 也不在 Dag
+| 1 | Pending，交易在 TxPool 中，正在等待被确认
+| 2 | Confirmed，交易已经被 Seq 确认，保存在 Dag 中。
+
+**返回示例**:
+```json
+{
+    "data":{
+        "code": 0,
+        "msg": "not exists"
+    },
+    "message":""
+}
+```
+---
+
 ## **Check Confirm**
 Check if a transaction is been confirmed. 
 

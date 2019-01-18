@@ -24,6 +24,7 @@ func (rpc *RpcController) Newrouter() *gin.Engine {
 	router.GET("peers_info", rpc.PeersInfo)
 	router.GET("og_peers_info", rpc.OgPeersInfo)
 	router.GET("transaction", rpc.Transaction)
+	router.GET("transaction_status", rpc.TransactionStatus)
 	router.GET("confirm", rpc.Confirm)
 	router.GET("transactions", rpc.Transactions)
 	router.GET("validators", rpc.Validator)
@@ -83,6 +84,7 @@ func (rpc *RpcController) writeListOfEndpoints(c *gin.Context) {
 		"query_receipt":  "hash",
 		"transaction":    "hash",
 		"transactions":   "seq_id,address",
+		"transaction_status": "hash",
 		"confirm":        "hash",
 		"query_contract": "tx",
 
