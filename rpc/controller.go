@@ -190,17 +190,9 @@ func (r *RpcController) Confirm(c *gin.Context) {
 	if txiTxpool != nil {
 		Response(c, http.StatusOK, nil, false)
 		return
-		// c.JSON(http.StatusNotFound, gin.H{
-		// 	"confirm": false,
-		// })
-	} else {
-		Response(c, http.StatusOK, nil, true)
-		return
-		// c.JSON(http.StatusNotFound, gin.H{
-		// 	"confirm": true,
-		// })
 	}
-
+	Response(c, http.StatusOK, nil, true)
+	return
 }
 
 //Transactions query Transactions
@@ -557,10 +549,6 @@ func (r *RpcController) QueryBalance(c *gin.Context) {
 		"balance": b,
 	})
 	return
-	// c.JSON(http.StatusBadRequest, gin.H{
-	// 	"balance": b,
-	// })
-	// return
 }
 
 func (r *RpcController) QueryShare(c *gin.Context) {
@@ -654,17 +642,6 @@ func (r *RpcController) Monitor(c *gin.Context) {
 	}
 	peersinfo := r.P2pServer.PeersInfo()
 	for _, p := range peersinfo {
-		/*
-			if p.Network.Inbound {
-				addr = p.Network.LocalAddress
-			}else {
-				addr = p.Network.RemoteAddress
-			}
-				ipPort :=strings.Split(addr,":")
-				if len(ipPort) ==2 {
-					m.Peers = append(m.Peers ,ipPort[1])
-				}
-		*/
 		var peer Peer
 		peer.Addr = p.Network.RemoteAddress
 		peer.ShortId = p.ShortId
